@@ -1,0 +1,22 @@
+services:
+  taxonomy-drift-db:
+    image: postgres:16-alpine
+    container_name: taxonomy_drift_local
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${LOCAL_PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${LOCAL_PG_PASSWORD:-postgres}
+      POSTGRES_DB: ${LOCAL_PG_DB:-taxonomy_drift_local}
+    ports:
+      - "${LOCAL_PG_PORT:-5432}:5432"
+    volumes:
+      - taxonomy_drift_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LOCAL_PG_USER:-postgres} -d ${LOCAL_PG_DB:-taxonomy_drift_local}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  taxonomy_drift_data:

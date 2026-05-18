@@ -1,0 +1,49 @@
+# Python
+/.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Environment variables
+.env
+.env.*
+
+# GCP service account credentials
+service-account.json
+
+nul
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Recordings
+recordings/
+
+depricated/
+
+taxonomy_cluster_output/
+documentation/
+outputs/
+centeroids_output/
+.venv/
+.env
+__pycache__/
+*.pyc
+node_modules/
+dist/
+.env.local
+.env.*
