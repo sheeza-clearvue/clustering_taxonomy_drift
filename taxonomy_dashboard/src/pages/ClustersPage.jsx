@@ -5,7 +5,7 @@ import ClusterTable from '../components/ClusterTable.jsx'
 import { useDebounce } from '../hooks/useDebounce.js'
 
 const DEFAULT_FILTERS = {
-  field_name: '', search: '', anomaly: '', named: '', limit: 100, offset: 0,
+  field_name: '', search: '', anomaly: '', named: '', min_size: 1, limit: 100, offset: 0,
 }
 
 export default function ClustersPage() {
@@ -26,6 +26,7 @@ export default function ClustersPage() {
       if (f.search)     params.set('search',     f.search)
       if (f.anomaly)    params.set('anomaly',     f.anomaly)
       if (f.named)      params.set('named',       f.named)
+      if (f.min_size && f.min_size > 1) params.set('min_size', f.min_size)
       params.set('limit', f.limit)
       params.set('offset', f.offset)
       const res = await fetch(`/api/clusters?${params}`)
@@ -40,7 +41,7 @@ export default function ClustersPage() {
 
   useEffect(() => {
     fetchClusters({ ...filters, search: debouncedSearch })
-  }, [filters.field_name, filters.anomaly, filters.named, filters.limit, filters.offset, debouncedSearch])
+  }, [filters.field_name, filters.anomaly, filters.named, filters.min_size, filters.limit, filters.offset, debouncedSearch])
 
   function handleChange(patch) {
     setFilters(prev => ({ ...prev, ...patch, offset: 0 }))
