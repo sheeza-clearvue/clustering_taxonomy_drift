@@ -38,7 +38,7 @@ export default function GlobalSearch() {
   }, [setSearchOpen])
 
   function selectResult(row) {
-    navigate('clusters')
+    navigate('observatory')
     setSelectedClusterId(row.id)
     close()
   }

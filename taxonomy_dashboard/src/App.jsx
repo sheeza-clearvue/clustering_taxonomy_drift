@@ -6,10 +6,8 @@ import TopBar from './components/layout/TopBar.jsx'
 import RightInspector from './components/layout/RightInspector.jsx'
 import GlobalSearch from './components/GlobalSearch.jsx'
 
-const Observatory    = lazy(() => import('./pages/Observatory.jsx'))
-const AnomaliesPage  = lazy(() => import('./pages/AnomaliesPage.jsx'))
-const DriftPage      = lazy(() => import('./pages/DriftPage.jsx'))
-const OverviewPage   = lazy(() => import('./pages/OverviewPage.jsx'))
+const Observatory  = lazy(() => import('./pages/Observatory.jsx'))
+const OverviewPage = lazy(() => import('./pages/OverviewPage.jsx'))
 
 function PageSuspense({ children }) {
   return (
@@ -28,7 +26,6 @@ function PageSuspense({ children }) {
 
 function AppShell() {
   const { activePage, selectedClusterId, searchOpen } = useAppCtx()
-
   const isObservatory = activePage === 'observatory'
 
   return (
@@ -45,9 +42,7 @@ function AppShell() {
           ].join(' ')}>
             <PageSuspense>
               {activePage === 'observatory' && <Observatory />}
-              {activePage === 'overview'    && <OverviewPage />}
-              {activePage === 'anomalies'   && <AnomaliesPage />}
-              {activePage === 'drift'       && <DriftPage />}
+              {activePage === 'overview' && <OverviewPage />}
             </PageSuspense>
           </main>
 

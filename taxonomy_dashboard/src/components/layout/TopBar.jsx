@@ -2,10 +2,7 @@ import { Search, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import useStore from '../../store/useStore.js'
 
 const PAGE_LABELS = {
-  overview:  { title: 'Semantic Intelligence', sub: 'Compression, recovery & quality signals' },
-  clusters:  { title: 'Cluster Explorer',      sub: 'Browse, search and inspect all clusters' },
-  anomalies: { title: 'Anomaly Intelligence',  sub: 'Outlier analysis and recovery potential' },
-  drift:     { title: 'Drift Monitor',         sub: 'Pattern changes and emerging signals' },
+  overview:  { title: 'Intelligence', sub: 'Compression, quality, anomalies, merge risk, coverage, and metadata' },
 }
 
 export default function TopBar() {

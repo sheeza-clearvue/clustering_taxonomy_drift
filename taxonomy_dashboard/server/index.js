@@ -1155,6 +1155,119 @@ app.get('/api/medoid-intelligence', async (req, res) => {
   } catch (err) { console.error(err.message); res.status(500).json({ error: err.message }); }
 });
 
+
+// ── GET /api/duplicate-name-intelligence ─────────────────────────────────────
+app.get('/api/duplicate-name-intelligence', async (req, res) => {
+  try {
+    const exists = await tableExists('taxonomy_cluster_names');
+    if (!exists) {
+      return res.json({ same_field_duplicate_groups: 0, cross_field_duplicate_groups: 0, same_field_examples: [], cross_field_examples: [] });
+    }
+
+    const { rows: sameField } = await pool.query(`
+      SELECT field_name, run_id, cluster_version, display_name, COUNT(*)::int AS cluster_count
+      FROM taxonomy_cluster_names
+      WHERE display_name IS NOT NULL AND TRIM(display_name) <> ''
+      GROUP BY field_name, run_id, cluster_version, display_name
+      HAVING COUNT(*) > 1
+      ORDER BY COUNT(*) DESC, field_name, display_name
+      LIMIT 50
+    `);
+
+    const { rows: crossField } = await pool.query(`
+      SELECT display_name,
+             COUNT(DISTINCT field_name)::int AS field_count,
+             COUNT(*)::int AS cluster_count,
+             array_agg(DISTINCT field_name ORDER BY field_name) AS fields
+      FROM taxonomy_cluster_names
+      WHERE display_name IS NOT NULL AND TRIM(display_name) <> ''
+      GROUP BY display_name
+      HAVING COUNT(DISTINCT field_name) > 1
+      ORDER BY COUNT(DISTINCT field_name) DESC, COUNT(*) DESC, display_name
+      LIMIT 50
+    `);
+
+    res.json({
+      same_field_duplicate_groups: sameField.length,
+      cross_field_duplicate_groups: crossField.length,
+      same_field_examples: sameField,
+      cross_field_examples: crossField,
+    });
+  } catch (err) { console.error('/api/duplicate-name-intelligence:', err.message); res.status(500).json({ error: err.message }); }
+});
+
+// ── GET /api/run-metadata ─────────────────────────────────────────────────────
+app.get('/api/run-metadata', async (req, res) => {
+  try {
+    const exists = await tableExists('taxonomy_run_metadata');
+    if (!exists) return res.json({ runs: [], fields_with_runs: 0, latest_created_at: null });
+
+    const cols = await getCols('taxonomy_run_metadata');
+    const select = [
+      cols.has('run_id') ? 'run_id' : "NULL::text AS run_id",
+      cols.has('field_name') ? 'field_name' : "NULL::text AS field_name",
+      cols.has('model_name') ? 'model_name' : "NULL::text AS model_name",
+      cols.has('embedding_device') ? 'embedding_device' : "NULL::text AS embedding_device",
+      cols.has('text_mode') ? 'text_mode' : "NULL::text AS text_mode",
+      cols.has('min_cluster_size') ? 'min_cluster_size' : 'NULL::int AS min_cluster_size',
+      cols.has('min_samples') ? 'min_samples' : 'NULL::int AS min_samples',
+      cols.has('hdbscan_metric') ? 'hdbscan_metric' : "NULL::text AS hdbscan_metric",
+      cols.has('graph_k_values') ? 'graph_k_values' : "NULL::text AS graph_k_values",
+      cols.has('graph_threshold_values') ? 'graph_threshold_values' : "NULL::text AS graph_threshold_values",
+      cols.has('graph_resolution') ? 'graph_resolution' : 'NULL::numeric AS graph_resolution',
+      cols.has('graph_min_community_size') ? 'graph_min_community_size' : 'NULL::int AS graph_min_community_size',
+      cols.has('mutual_knn') ? 'mutual_knn' : 'NULL::boolean AS mutual_knn',
+      cols.has('same_field_only') ? 'same_field_only' : 'NULL::boolean AS same_field_only',
+      cols.has('total_labels') ? 'total_labels' : 'NULL::bigint AS total_labels',
+      cols.has('total_occurrences') ? 'total_occurrences' : 'NULL::bigint AS total_occurrences',
+      cols.has('base_grouped_labels') ? 'base_grouped_labels' : 'NULL::bigint AS base_grouped_labels',
+      cols.has('base_anomaly_labels') ? 'base_anomaly_labels' : 'NULL::bigint AS base_anomaly_labels',
+      cols.has('final_cluster_count') ? 'final_cluster_count' : 'NULL::bigint AS final_cluster_count',
+      cols.has('true_anomaly_count') ? 'true_anomaly_count' : 'NULL::bigint AS true_anomaly_count',
+      cols.has('created_at') ? 'created_at' : 'NULL::timestamp AS created_at',
+      cols.has('updated_at') ? 'updated_at' : 'NULL::timestamp AS updated_at',
+      cols.has('run_report_json') ? 'run_report_json::text AS run_report_json' : 'NULL::text AS run_report_json',
+    ];
+
+    const { rows } = await pool.query(`
+      SELECT ${select.join(', ')}
+      FROM taxonomy_run_metadata
+      ORDER BY ${cols.has('created_at') ? 'created_at DESC NULLS LAST,' : ''} field_name NULLS LAST, run_id NULLS LAST
+      LIMIT 100
+    `);
+
+    const runs = rows.map(r => {
+      let report = null;
+      if (r.run_report_json) {
+        try { report = typeof r.run_report_json === 'string' ? JSON.parse(r.run_report_json) : r.run_report_json; } catch {}
+      }
+      const best = report?.strict_graph_recovery?.best_config || {};
+      return {
+        ...r,
+        run_report_json: undefined,
+        strict_recovery: report?.strict_graph_recovery ? {
+          recovered_labels: report.strict_graph_recovery.recovered_labels,
+          true_anomaly_labels: report.strict_graph_recovery.true_anomaly_labels,
+          recovered_occurrences: report.strict_graph_recovery.recovered_occurrences,
+          true_anomaly_occurrences: report.strict_graph_recovery.true_anomaly_occurrences,
+          label_recovery_rate: best.label_recovery_rate,
+          occurrence_recovery_rate: best.occurrence_recovery_rate,
+          similarity_threshold: best.similarity_threshold,
+          k_neighbors: best.k_neighbors,
+          graph_communities_found: best.graph_communities_found,
+        } : null,
+      };
+    });
+
+    const fields = new Set(runs.map(r => r.field_name).filter(Boolean));
+    res.json({
+      runs,
+      fields_with_runs: fields.size,
+      latest_created_at: runs[0]?.created_at || null,
+    });
+  } catch (err) { console.error('/api/run-metadata:', err.message); res.status(500).json({ error: err.message }); }
+});
+
 // ── Start ──────────────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.SERVER_PORT || '5050', 10);
 app.listen(PORT, () => console.log(`Taxonomy API → http://localhost:${PORT}`));

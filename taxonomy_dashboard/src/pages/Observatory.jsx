@@ -1,5 +1,5 @@
 import { useEffect, useState, lazy, Suspense } from 'react'
-import { RotateCcw, Map, Orbit, Search, SlidersHorizontal, Minus, Plus, Maximize2, Table2, Columns, LayoutDashboard, AlertTriangle, GitBranch } from 'lucide-react'
+import { RotateCcw, Map, Orbit, Search, SlidersHorizontal, Minus, Plus, Maximize2, Table2, Columns, LayoutDashboard } from 'lucide-react'
 import useStore from '../store/useStore.js'
 import RightInspector from '../components/layout/RightInspector.jsx'
 import ClusterTable from '../components/ClusterTable.jsx'
@@ -431,20 +431,11 @@ export default function Observatory() {
               <RotateCcw size={11} /> Reset View
             </button>
 
-            <div className="grid grid-cols-3 gap-1.5">
-              {[
-                ['overview', LayoutDashboard, 'Intel', '#a855f7'],
-                ['anomalies', AlertTriangle, 'Anom', '#ef4444'],
-                ['drift', GitBranch, 'Drift', '#f97316'],
-              ].map(([page, Icon, label, color]) => (
-                <button key={page} onClick={() => navigate(page)}
-                  className="flex flex-col items-center justify-center gap-1 rounded-lg py-2 text-[8.5px] font-semibold transition-all duration-150"
-                  style={{ background: `${color}10`, border: `1px solid ${color}26`, color }}>
-                  <Icon size={12} />
-                  <span>{label}</span>
-                </button>
-              ))}
-            </div>
+            <button onClick={() => navigate('overview')}
+              className="flex items-center justify-center gap-1.5 rounded-lg py-2 text-[9.5px] font-semibold transition-all duration-150"
+              style={{ background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.26)', color: '#a855f7' }}>
+              <LayoutDashboard size={12} /> Intelligence
+            </button>
           </div>
         </div>
 
@@ -548,103 +539,6 @@ export default function Observatory() {
         </div>
       </div>
 
-      {/* ══ BOTTOM INTELLIGENCE ROW ═════════════════════════════════════════════ */}
-      <div className="flex-shrink-0 grid gap-2 px-2.5 py-2 overflow-hidden"
-        style={{
-          background: 'linear-gradient(0deg, rgba(2,5,10,0.99) 0%, rgba(4,10,20,0.95) 100%)',
-          borderTop: '1px solid rgba(26,45,74,0.6)',
-          gridTemplateColumns: 'repeat(6, minmax(150px, 1fr))',
-          height: 118,
-          maxHeight: 118,
-          scrollbarWidth: 'thin', scrollbarColor: '#1a2d4a transparent',
-        }}>
-
-        <BottomCard label="Compression Intelligence" color="#a855f7">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <div className="text-[19px] font-bold leading-none" style={{ color: '#a855f7', textShadow: '0 0 12px rgba(168,85,247,0.4)' }}>
-                {compression?.compression_ratio != null ? `${compression.compression_ratio}×` : '—'}
-              </div>
-              <div className="text-[8.5px] mt-1" style={{ color: '#475569' }}>{rawLabels.toLocaleString()} raw labels</div>
-              <InsightLine>{reductionPct != null ? `${(reductionPct * 100).toFixed(0)}% reduction into repeated semantic patterns.` : 'Compression source data unavailable.'}</InsightLine>
-            </div>
-            <Sparkline seed={compressionRatio || 2.4} color="#a855f7" />
-          </div>
-        </BottomCard>
-
-        <BottomCard label="Semantic Quality" color="#10b981">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <div className="text-[19px] font-bold leading-none" style={{ color: '#10b981', textShadow: '0 0 12px rgba(16,185,129,0.4)' }}>
-                {totalClusters ? `${(coveragePct * 100).toFixed(0)}%` : '—'}
-              </div>
-              <div className="text-[8.5px] mt-1" style={{ color: '#475569' }}>{namedCount.toLocaleString()} named</div>
-              <InsightLine>{medoid?.weak?.length ? `${medoid.weak.length} weak medoid examples need review.` : 'Medoid similarity not computed.'}</InsightLine>
-            </div>
-            <Sparkline seed={coveragePct * 8 + 1.2} color="#10b981" />
-          </div>
-        </BottomCard>
-
-        <BottomCard label="Anomaly Intelligence" color="#ef4444">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <div className="text-[19px] font-bold leading-none" style={{ color: '#ef4444', textShadow: '0 0 12px rgba(239,68,68,0.4)' }}>
-                {anomalyCount.toLocaleString()}
-              </div>
-              <div className="text-[8.5px] mt-1" style={{ color: '#475569' }}>
-                {anomalySummary?.by_type ? `${Object.keys(anomalySummary.by_type).length} types` : 'clusters'}
-              </div>
-              <InsightLine>{`${(anomalyPct * 100).toFixed(1)}% anomaly pressure across the taxonomy.`}</InsightLine>
-            </div>
-            <AnomalyDonut pct={totalClusters ? Math.min(anomalyCount / totalClusters, 1) : 0} color="#ef4444" />
-          </div>
-        </BottomCard>
-
-        <BottomCard label="Drift Intelligence" color="#f97316">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <div className="text-[19px] font-bold leading-none" style={{ color: '#f97316', textShadow: '0 0 12px rgba(249,115,22,0.4)' }}>
-                {drift?.total_drift_events ?? drift?.run_count ?? '—'}
-              </div>
-              <div className="text-[8.5px] mt-1" style={{ color: '#475569' }}>{drift ? 'recent signals' : 'not computed'}</div>
-              <InsightLine>{drift?.field_stats?.[0] ? `${drift.field_stats[0].field_name} has the largest current cluster surface.` : 'Drift concentration not computed.'}</InsightLine>
-            </div>
-            <Sparkline seed={3.2} color="#f97316" />
-          </div>
-        </BottomCard>
-
-        <BottomCard label="Merge Intelligence" color="#06b6d4">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <div className="text-[19px] font-bold leading-none" style={{ color: '#06b6d4', textShadow: '0 0 12px rgba(6,182,212,0.4)' }}>
-                {medoid?.merge_candidates ?? medoid?.total_clusters_with_medoids ?? '—'}
-              </div>
-              <div className="text-[8.5px] mt-1" style={{ color: '#475569' }}>field-scoped duplicate names</div>
-              <InsightLine>Cross-field duplicate names are not automatic merge candidates.</InsightLine>
-            </div>
-            <Sparkline seed={1.7} color="#06b6d4" />
-          </div>
-        </BottomCard>
-
-        <BottomCard label="Coverage Intelligence" color="#00d4ff">
-          <div className="flex flex-col gap-1.5">
-            <div className="text-[19px] font-bold leading-none" style={{ color: '#00d4ff', textShadow: '0 0 12px rgba(0,212,255,0.4)' }}>
-              {totalClusters ? `${(coveragePct * 100).toFixed(0)}%` : '—'}
-            </div>
-            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(26,45,74,0.7)' }}>
-              <div style={{
-                width: `${coveragePct * 100}%`, height: '100%',
-                background: 'linear-gradient(90deg, #00d4ff, #a855f7)',
-                borderRadius: 999, boxShadow: '0 0 8px rgba(0,212,255,0.45)',
-                transition: 'width 1.2s ease',
-              }} />
-            </div>
-            <div className="text-[8.5px]" style={{ color: '#475569' }}>
-              {(health?.total_label_rows || 0).toLocaleString()} labels
-            </div>
-          </div>
-        </BottomCard>
-      </div>
     </div>
   )
 }
