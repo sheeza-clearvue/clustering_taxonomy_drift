@@ -1,0 +1,544 @@
+import { useEffect, useState, lazy, Suspense } from 'react'
+import { RotateCcw, Map, Orbit, Search, SlidersHorizontal, Minus, Plus, Maximize2, Table2, Columns, LayoutDashboard } from 'lucide-react'
+import useStore from '../store/useStore.js'
+import RightInspector from '../components/layout/RightInspector.jsx'
+import ClusterTable from '../components/ClusterTable.jsx'
+import { getFieldColor } from '../components/scene/sceneUtils.js'
+
+const SemanticScene = lazy(() => import('../components/scene/SemanticScene.jsx'))
+
+// ── Mini sparkline ─────────────────────────────────────────────────────────────
+function Sparkline({ seed = 2.1, color = '#00d4ff', width = 78, height = 30 }) {
+  const pts = Array.from({ length: 10 }, (_, i) => {
+    const base = 0.2 + 0.55 * (i / 9)
+    const wave = Math.sin(i * seed * 2.7 + seed * 0.9) * 0.14
+    return Math.max(0.05, Math.min(0.95, base + wave))
+  })
+  const w = width, h = height
+  const d = pts.map((v, i) => `${i === 0 ? 'M' : 'L'}${(i * w / 9).toFixed(1)},${(h - v * h * 0.86 - 2).toFixed(1)}`).join(' ')
+  const lx = w.toFixed(1), ly = (h - pts[9] * h * 0.86 - 2).toFixed(1)
+  return (
+    <svg width={w} height={h} style={{ display: 'block', overflow: 'visible' }}>
+      <path d={d} stroke={color} strokeWidth="1.5" fill="none" strokeLinejoin="round" opacity={0.8} />
+      <circle cx={lx} cy={ly} r="2.5" fill={color} style={{ filter: `drop-shadow(0 0 4px ${color})` }} />
+    </svg>
+  )
+}
+
+// ── Anomaly donut ──────────────────────────────────────────────────────────────
+function AnomalyDonut({ pct = 0.08, color = '#ef4444' }) {
+  const r = 15, cx = 19, cy = 19, circ = 2 * Math.PI * r
+  const used = Math.max(0, Math.min(1, pct)) * circ
+  return (
+    <svg width={38} height={38} style={{ flexShrink: 0 }}>
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={3.5} />
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke={color} strokeWidth={3.5}
+        strokeDasharray={`${used.toFixed(1)} ${circ.toFixed(1)}`} strokeLinecap="round"
+        transform={`rotate(-90 ${cx} ${cy})`} style={{ filter: `drop-shadow(0 0 4px ${color}99)` }} />
+      <text x={cx} y={cy + 3.5} textAnchor="middle" fontSize="7.5" fill={color} fontWeight="700">
+        {Math.round(pct * 100)}%
+      </text>
+    </svg>
+  )
+}
+
+// ── Bottom metric card ─────────────────────────────────────────────────────────
+function BottomCard({ label, color, children }) {
+  return (
+    <div className="flex flex-col gap-1.5 px-3 pt-2.5 pb-2 rounded-xl" style={{
+      background: 'rgba(6,13,26,0.92)', border: `1px solid ${color}28`,
+      backdropFilter: 'blur(16px)',
+      boxShadow: `0 4px 24px rgba(0,0,0,0.55), 0 0 28px ${color}08`,
+      minWidth: 0, minHeight: 88, overflow: 'hidden',
+    }}>
+      <div className="text-[8.5px] uppercase tracking-[0.22em] font-bold" style={{ color: color + 'aa' }}>{label}</div>
+      {children}
+    </div>
+  )
+}
+
+function InsightLine({ children }) {
+  return <div className="text-[8.5px] leading-snug" style={{ color: '#64748b' }}>{children}</div>
+}
+
+// ── Left panel helpers ─────────────────────────────────────────────────────────
+function CtrlSection({ label, children }) {
+  return (
+    <div className="flex-shrink-0">
+      <div className="text-[8px] uppercase tracking-[0.22em] font-bold pb-1.5" style={{ color: '#1e3450' }}>{label}</div>
+      {children}
+    </div>
+  )
+}
+
+function FieldChip({ field, active, count, capped, onClick }) {
+  const color = getFieldColor(field)
+  return (
+    <button onClick={onClick} className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-left transition-all duration-150"
+      style={active
+        ? { background: color + '18', border: `1px solid ${color}44`, boxShadow: `0 0 10px ${color}18` }
+        : { background: 'transparent', border: '1px solid transparent' }
+      }>
+      <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+        style={{ background: active ? color : '#1e3450', boxShadow: active ? `0 0 5px ${color}` : 'none' }} />
+      <span className="flex-1 text-[10px] truncate" style={{ color: active ? color : '#475569' }}>{field}</span>
+      <span className="text-[9px]" style={{ color: active ? color + '88' : '#334155' }}>
+        {count}{capped && <span style={{ color: '#475569' }} title="Sample only — more clusters exist">+</span>}
+      </span>
+    </button>
+  )
+}
+
+// ── Default inspector (no selection) ──────────────────────────────────────────
+function DefaultInspector({ health, clusters, fields }) {
+  const top5 = [...clusters].sort((a, b) => (b.cluster_size || 0) - (a.cluster_size || 0)).slice(0, 5)
+  return (
+    <div className="flex flex-col h-full overflow-y-auto" style={{ scrollbarWidth: 'thin', scrollbarColor: '#1a2d4a transparent' }}>
+      <div className="px-4 py-4 flex-shrink-0" style={{ borderBottom: '1px solid rgba(26,45,74,0.5)' }}>
+        <div className="text-[9px] uppercase tracking-[0.2em] font-bold mb-1" style={{ color: '#00d4ff88' }}>Cluster Inspector</div>
+        <div className="text-[13px] font-semibold text-dust mb-0.5">Select a node</div>
+        <div className="text-[10px]" style={{ color: '#475569' }}>Click any cluster in the semantic map to inspect its data.</div>
+        <div className="mt-3 h-px" style={{ background: 'linear-gradient(90deg, rgba(0,212,255,0.3), transparent)' }} />
+      </div>
+
+      {health && (
+        <div className="px-4 py-3 grid grid-cols-2 gap-2.5" style={{ borderBottom: '1px solid rgba(26,45,74,0.5)' }}>
+          {[
+            { v: (health.total_clusters || 0).toLocaleString(),  l: 'Clusters',  c: '#00d4ff' },
+            { v: health.fields_count || '—',                      l: 'Fields',    c: '#a855f7' },
+            { v: (health.named_clusters || 0).toLocaleString(),  l: 'Named',     c: '#10b981' },
+            { v: (health.anomaly_clusters || 0).toLocaleString(), l: 'Anomalies', c: '#ef4444' },
+          ].map(({ v, l, c }) => (
+            <div key={l} className="flex flex-col items-center py-2.5 rounded-lg"
+              style={{ background: 'rgba(255,255,255,0.02)', border: `1px solid ${c}18` }}>
+              <span className="text-[16px] font-bold" style={{ color: c, textShadow: `0 0 12px ${c}44` }}>{v}</span>
+              <span className="text-[8.5px] uppercase tracking-wider text-dust mt-0.5">{l}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {top5.length > 0 && (
+        <div className="px-4 py-3 flex-shrink-0" style={{ borderBottom: '1px solid rgba(26,45,74,0.5)' }}>
+          <div className="text-[9px] uppercase tracking-[0.18em] text-dust/60 mb-2.5 font-bold">Largest Clusters</div>
+          <div className="flex flex-col gap-1.5">
+            {top5.map(c => {
+              const fc = getFieldColor(c.field_name)
+              return (
+                <div key={c.id} className="flex items-center gap-2 px-2.5 py-2 rounded-lg"
+                  style={{ background: 'rgba(255,255,255,0.02)', border: `1px solid ${fc}1a` }}>
+                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: fc, boxShadow: `0 0 5px ${fc}` }} />
+                  <span className="flex-1 text-[11px] truncate" style={{ color: '#94a3b8' }}>
+                    {c.display_name || <em style={{ color: '#475569' }}>unnamed</em>}
+                  </span>
+                  <span className="text-[9.5px] flex-shrink-0" style={{ color: fc + 'cc' }}>
+                    {(c.cluster_size || 0).toLocaleString()}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {fields.length > 0 && (
+        <div className="px-4 py-3">
+          <div className="text-[9px] uppercase tracking-[0.18em] text-dust/60 mb-2.5 font-bold">Field Distribution</div>
+          <div className="flex flex-col gap-2">
+            {fields.slice(0, 7).map(([field, count]) => {
+              const fc = getFieldColor(field)
+              const total = fields.reduce((a, [, n]) => a + n, 0)
+              const pct = total ? (count / total) * 100 : 0
+              return (
+                <div key={field} className="flex items-center gap-2">
+                  <span className="text-[9.5px] truncate" style={{ color: fc, width: 80, flexShrink: 0 }}>{field}</span>
+                  <div className="flex-1 h-1 rounded-full" style={{ background: 'rgba(26,45,74,0.7)' }}>
+                    <div style={{
+                      width: `${pct}%`, height: '100%', borderRadius: 999,
+                      background: `linear-gradient(90deg, ${fc}cc, ${fc}55)`,
+                      boxShadow: `0 0 6px ${fc}44`, transition: 'width 0.8s ease',
+                    }} />
+                  </div>
+                  <span className="text-[9px] text-dust flex-shrink-0" style={{ width: 28, textAlign: 'right' }}>{count}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SceneLoader({ label = 'Initializing…' }) {
+  return (
+    <div className="flex items-center justify-center h-full flex-col gap-4">
+      <div className="relative">
+        <div className="w-14 h-14 rounded-full border-2 animate-spin" style={{ borderColor: 'rgba(0,212,255,0.15)', borderTopColor: '#00d4ff' }} />
+        <div className="absolute inset-2 rounded-full border animate-spin" style={{ borderColor: 'rgba(168,85,247,0.1)', borderBottomColor: '#a855f7', animationDirection: 'reverse', animationDuration: '1.4s' }} />
+      </div>
+      <p className="text-xs tracking-widest uppercase" style={{ color: '#1e3450' }}>{label}</p>
+    </div>
+  )
+}
+
+// ── Observatory ────────────────────────────────────────────────────────────────
+export default function Observatory() {
+  const {
+    selectedClusterId, setSelectedClusterId,
+    activeField, setActiveField,
+    activeFields, setActiveFields,
+    colorMode, setColorMode,
+    anomalyFilter, setAnomalyFilter,
+    triggerCameraReset,
+    navigate,
+    health,
+  } = useStore()
+
+  const [clusters,       setClusters]       = useState([])
+  const [fieldStats,     setFieldStats]     = useState({})
+  const [loading,        setLoading]        = useState(false)
+  const [anomalySummary, setAnomalySummary] = useState(null)
+  const [compression,    setCompression]    = useState(null)
+  const [drift,          setDrift]          = useState(null)
+  const [medoid,         setMedoid]         = useState(null)
+  const [viewMode,       setViewMode]       = useState('map')
+  const [showLabels,     setShowLabels]     = useState(false)
+  const [sizeFilter,     setSizeFilter]     = useState(1)
+
+  const sendSceneCommand = (action) => {
+    window.dispatchEvent(new CustomEvent('semantic-scene-command', { detail: { action } }))
+  }
+
+  const resetScene = () => {
+    triggerCameraReset()
+    sendSceneCommand('reset')
+  }
+
+  const selectedFields = activeFields?.length ? activeFields : (activeField ? [activeField] : [])
+
+  useEffect(() => {
+    setLoading(true)
+    Promise.allSettled([
+      fetch('/api/fields').then(r => r.json()),
+      fetch('/api/anomaly-intelligence').then(r => r.json()),
+      fetch('/api/semantic-compression').then(r => r.json()),
+      fetch('/api/drift-summary').then(r => r.json()),
+      fetch('/api/medoid-intelligence').then(r => r.json()),
+    ]).then(([fieldsRes, an, comp, dr, med]) => {
+      if (an.status === 'fulfilled')   setAnomalySummary(an.value?.summary)
+      if (comp.status === 'fulfilled') setCompression(comp.value)
+      if (dr.status === 'fulfilled')   setDrift(dr.value)
+      if (med.status === 'fulfilled')  setMedoid(med.value)
+
+      const fieldList = (fieldsRes.status === 'fulfilled' && Array.isArray(fieldsRes.value))
+        ? fieldsRes.value : []
+
+      if (fieldList.length === 0) {
+        return fetch('/api/clusters?limit=2000&projection=umap').then(r => r.json()).then(data => {
+          if (Array.isArray(data)) setClusters(data)
+        })
+      }
+
+      return Promise.allSettled(
+        fieldList.map(f =>
+          fetch(`/api/clusters?field_name=${encodeURIComponent(f)}&limit=2000&projection=umap`).then(r => r.json())
+        )
+      ).then(results => {
+        const seen = new Set(), merged = [], stats = {}
+        results.forEach((r, idx) => {
+          if (r.status !== 'fulfilled' || !Array.isArray(r.value)) return
+          const field = fieldList[idx], data = r.value
+          stats[field] = { rendered: data.length, capped: data.length >= 2000 }
+          data.forEach(c => {
+            const key = c.id ?? c.cluster_id
+            if (!seen.has(key)) { seen.add(key); merged.push(c) }
+          })
+        })
+        setClusters(merged)
+        setFieldStats(stats)
+      })
+    }).finally(() => setLoading(false))
+  }, [])
+
+  const displayClusters = clusters.filter(c => {
+    if (selectedFields.length && !selectedFields.includes(c.field_name)) return false
+    if (anomalyFilter === 'anomaly'  && !c.is_true_anomaly_cluster) return false
+    if (anomalyFilter === 'standard' &&  c.is_true_anomaly_cluster) return false
+    if (sizeFilter > 1 && (c.cluster_size || 0) < sizeFilter)      return false
+    return true
+  })
+
+  const fieldGroups = clusters.reduce((acc, c) => {
+    acc[c.field_name] = (acc[c.field_name] || 0) + 1; return acc
+  }, {})
+  const fields = Object.entries(fieldGroups).sort((a, b) => b[1] - a[1])
+
+  const anomalyCount  = health?.anomaly_clusters || anomalySummary?.total || 0
+  const totalClusters = health?.total_clusters || clusters.length || 0
+  const namedCount    = health?.named_clusters || 0
+  const coveragePct   = totalClusters ? namedCount / totalClusters : 0
+  const rawLabels     = compression?.raw_label_count || health?.total_label_rows || 0
+  const compressionRatio = compression?.compression_ratio || (totalClusters ? rawLabels / totalClusters : null)
+  const reductionPct  = rawLabels ? Math.max(0, 1 - (totalClusters / rawLabels)) : null
+  const anomalyPct    = totalClusters ? anomalyCount / totalClusters : 0
+
+  function toggleField(field) {
+    setSelectedClusterId(null)
+    if (!field) { setActiveFields([]); setActiveField(null); return }
+    const next = selectedFields.includes(field)
+      ? selectedFields.filter(f => f !== field)
+      : [...selectedFields, field]
+    setActiveFields(next)
+    if (next.length === 0) setActiveField(null)
+    if (next.length === 1) setActiveField(next[0])
+  }
+
+  const isTableView = viewMode === 'table'
+  const isSplitView = viewMode === 'split'
+  const sceneProjection = viewMode === '3d' ? '3d' : 'map'
+
+  return (
+    <div className="flex flex-col w-full h-full overflow-hidden" style={{ background: '#02050a' }}>
+
+      {/* ══ THREE-COLUMN MAIN AREA ══════════════════════════════════════════════ */}
+      <div className="flex flex-1 overflow-hidden min-h-0">
+
+        {/* ── LEFT CONTROL PANEL ─────────────────────────────────────────────── */}
+        <div className="flex flex-col flex-shrink-0 overflow-y-auto overflow-x-hidden gap-3.5 px-3 py-3"
+          style={{
+            width: 'clamp(190px, 12vw, 220px)',
+            background: 'linear-gradient(180deg, #070e1c 0%, #030810 100%)',
+            borderRight: '1px solid rgba(26,45,74,0.65)',
+            scrollbarWidth: 'thin', scrollbarColor: '#1a2d4a transparent',
+          }}>
+
+          {/* Active sample indicator */}
+          <div className="flex-shrink-0 pb-2" style={{ borderBottom: '1px solid rgba(26,45,74,0.5)' }}>
+            <div className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 animate-pulse" style={{ background: '#10b981', boxShadow: '0 0 5px #10b981' }} />
+              <span className="text-[9px]" style={{ color: '#64748b' }}>
+                {displayClusters.length.toLocaleString()}
+                {clusters.length !== displayClusters.length && ` / ${clusters.length.toLocaleString()}`} nodes
+              </span>
+            </div>
+          </div>
+
+          {/* View */}
+          <CtrlSection label="View">
+            <div className="grid grid-cols-2 gap-1 rounded-lg p-1" style={{ border: '1px solid rgba(26,45,74,0.65)', background: 'rgba(3,8,15,0.65)' }}>
+              {[['map', Map, 'Map'], ['3d', Orbit, '3D'], ['table', Table2, 'Table'], ['split', Columns, 'Split']].map(([mode, Icon, lbl]) => (
+                <button key={mode} onClick={() => setViewMode(mode)}
+                  className="flex items-center justify-center gap-1.5 rounded-md py-1.5 px-2 text-[9.5px] font-semibold transition-all duration-150 whitespace-nowrap"
+                  style={viewMode === mode
+                    ? { background: 'rgba(0,212,255,0.16)', color: '#00d4ff', boxShadow: '0 0 10px rgba(0,212,255,0.12)' }
+                    : { background: 'rgba(3,8,15,0.85)', color: '#475569' }
+                  }>
+                  <Icon size={11} /> {lbl}
+                </button>
+              ))}
+            </div>
+          </CtrlSection>
+
+          {/* Color By */}
+          <CtrlSection label="Color By">
+            <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg"
+              style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(26,45,74,0.65)' }}>
+              <select value={colorMode} onChange={e => setColorMode(e.target.value)}
+                className="w-full bg-transparent outline-none text-[10px]" style={{ color: '#94a3b8' }}>
+                <option value="field">Field</option>
+                <option value="cluster">Cluster</option>
+                <option value="anomaly">Anomaly</option>
+                <option value="density">Density</option>
+                <option value="quality">Quality</option>
+              </select>
+            </div>
+          </CtrlSection>
+
+          {/* Filters */}
+          <CtrlSection label="Filters">
+            <div className="flex flex-col gap-1.5">
+              {/* Labels toggle */}
+              <button onClick={() => setShowLabels(v => !v)}
+                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg transition-all duration-150"
+                style={{
+                  background: showLabels ? 'rgba(0,212,255,0.08)' : 'rgba(255,255,255,0.025)',
+                  border: `1px solid ${showLabels ? 'rgba(0,212,255,0.35)' : 'rgba(26,45,74,0.5)'}`,
+                }}>
+                <span className="text-[10px]" style={{ color: showLabels ? '#94a3b8' : '#475569' }}>Labels</span>
+                <div className="relative rounded-full transition-all duration-200"
+                  style={{ width: 28, height: 14, background: showLabels ? 'rgba(0,212,255,0.35)' : 'rgba(26,45,74,0.8)', border: `1px solid ${showLabels ? 'rgba(0,212,255,0.6)' : 'rgba(26,45,74,0.6)'}` }}>
+                  <div className="absolute top-0.5 rounded-full transition-all duration-200"
+                    style={{ width: 10, height: 10, background: showLabels ? '#00d4ff' : '#334155', left: showLabels ? 15 : 2, boxShadow: showLabels ? '0 0 6px #00d4ff' : 'none' }} />
+                </div>
+              </button>
+
+              <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid rgba(26,45,74,0.65)' }}>
+                {[['all', 'All'], ['standard', 'Std'], ['anomaly', 'Anom']].map(([v, l]) => (
+                  <button key={v} onClick={() => setAnomalyFilter(v)}
+                    className="flex-1 py-1 text-[9px] transition-all duration-150"
+                    style={anomalyFilter === v
+                      ? v === 'anomaly'
+                        ? { background: 'rgba(239,68,68,0.18)', color: '#ef4444' }
+                        : { background: 'rgba(0,212,255,0.12)', color: '#00d4ff' }
+                      : { background: 'rgba(3,8,15,0.85)', color: '#334155' }
+                    }>{l}</button>
+                ))}
+              </div>
+
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-[9px]" style={{ color: '#475569' }}>Min Size</span>
+                  <span className="text-[9px] font-mono" style={{ color: '#00d4ff' }}>{sizeFilter}</span>
+                </div>
+                <input type="range" min={1} max={50} step={1} value={sizeFilter}
+                  onChange={e => setSizeFilter(Number(e.target.value))}
+                  className="w-full h-1 rounded-full cursor-pointer appearance-none"
+                  style={{ accentColor: '#00d4ff', background: 'rgba(26,45,74,0.7)' }} />
+              </div>
+            </div>
+          </CtrlSection>
+
+          {/* Field selector */}
+          <CtrlSection label="Field">
+            <div className="flex flex-col gap-0.5">
+              <button onClick={() => toggleField(null)}
+                className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-left transition-all duration-150"
+                style={!selectedFields.length
+                  ? { background: 'rgba(0,212,255,0.12)', border: '1px solid rgba(0,212,255,0.32)' }
+                  : { background: 'transparent', border: '1px solid transparent' }
+                }>
+                <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                  style={{ background: !selectedFields.length ? '#00d4ff' : '#1e3450', boxShadow: !selectedFields.length ? '0 0 5px #00d4ff' : 'none' }} />
+                <span className="flex-1 text-[10px]" style={{ color: !selectedFields.length ? '#00d4ff' : '#475569' }}>All Fields</span>
+                <span className="text-[9px]" style={{ color: !selectedFields.length ? '#00d4ff88' : '#334155' }}>{clusters.length}</span>
+              </button>
+              {fields.map(([field, count]) => (
+                <FieldChip key={field} field={field} count={count}
+                  capped={fieldStats[field]?.capped ?? false}
+                  active={selectedFields.includes(field)}
+                  onClick={() => toggleField(field)} />
+              ))}
+            </div>
+          </CtrlSection>
+
+          <div className="mt-auto flex-shrink-0 flex flex-col gap-2 pt-2" style={{ borderTop: '1px solid rgba(26,45,74,0.45)' }}>
+            <button onClick={resetScene}
+              className="flex items-center justify-center gap-1.5 rounded-lg py-2 text-[9.5px] transition-all duration-150"
+              style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(26,45,74,0.6)', color: '#64748b' }}
+              onMouseEnter={e => { e.currentTarget.style.color = '#00d4ff'; e.currentTarget.style.borderColor = 'rgba(0,212,255,0.3)' }}
+              onMouseLeave={e => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = 'rgba(26,45,74,0.6)' }}>
+              <RotateCcw size={11} /> Reset View
+            </button>
+
+            <button onClick={() => navigate('overview')}
+              className="flex items-center justify-center gap-1.5 rounded-lg py-2 text-[9.5px] font-semibold transition-all duration-150"
+              style={{ background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.26)', color: '#a855f7' }}>
+              <LayoutDashboard size={12} /> Intelligence
+            </button>
+          </div>
+        </div>
+
+        {/* ── CENTER: OBSERVATORY WORKSPACE ───────────────────────────────────── */}
+        <div className="relative flex-1 min-w-0 overflow-hidden">
+          {!isTableView && (
+            <div className={isSplitView ? 'h-[60%] min-h-[300px] relative overflow-hidden border-b border-obs-border/60' : 'absolute inset-0 overflow-hidden'}>
+              <Suspense fallback={<SceneLoader label="Initializing Semantic Map…" />}>
+                {!loading
+                  ? <SemanticScene clusters={displayClusters} colorMode={colorMode} viewMode={sceneProjection} showLabels={showLabels} />
+                  : <SceneLoader label="Loading semantic map…" />
+                }
+              </Suspense>
+            </div>
+          )}
+
+          {(isTableView || isSplitView) && (
+            <div className={isSplitView ? 'absolute left-0 right-0 bottom-0 h-[40%] min-h-[240px] overflow-hidden p-4' : 'absolute inset-0 overflow-hidden p-5 pt-16'}>
+              <div className="observatory-table-shell h-full overflow-hidden rounded-xl" style={{ background: 'rgba(3,8,15,0.78)', border: '1px solid rgba(26,45,74,0.72)' }}>
+                <ClusterTable clusters={displayClusters} loading={loading} error={null} />
+              </div>
+            </div>
+          )}
+
+          {/* Top semantic-map toolbar */}
+          <div className="absolute top-2.5 left-3 right-3 z-10 flex items-center justify-between gap-2" style={{ pointerEvents: 'none' }}>
+            {!isTableView && <div className="flex items-center gap-3 rounded-lg px-2.5 py-1.5"
+              style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', backdropFilter: 'blur(14px)', boxShadow: '0 10px 30px rgba(0,0,0,0.28)' }}>
+              {[
+                ['Cluster', '#e5e7eb', 'circle'],
+                ['Centroid', '#3b82f6', 'ring'],
+                ['Medoid', '#f97316', 'diamond'],
+                ['Anomaly', '#ec4899', 'dot'],
+              ].map(([label, color, kind]) => (
+                <div key={label} className="flex items-center gap-1 text-[10px] text-star">
+                  {kind === 'diamond' ? <span className="w-2 h-2 rotate-45" style={{ border: `2px solid ${color}` }} />
+                    : kind === 'ring' ? <span className="w-2.5 h-2.5 rounded-full" style={{ border: `2px solid ${color}`, boxShadow: `0 0 8px ${color}77` }} />
+                    : kind === 'dot' ? <span className="w-3 h-3 rounded-full" style={{ background: color, boxShadow: `0 0 10px ${color}88` }} />
+                    : <span className="w-3 h-3 rounded-full" style={{ border: `2px solid ${color}` }} />}
+                  <span>{label}</span>
+                </div>
+              ))}
+            </div>}
+
+            <div className="flex items-center gap-2" style={{ pointerEvents: 'auto' }}>
+              <div className="hidden md:flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 w-[240px]"
+                style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', backdropFilter: 'blur(14px)' }}>
+                <Search size={12} style={{ color: '#94a3b8' }} />
+                <input
+                  placeholder="Search cluster or label..."
+                  className="w-full bg-transparent outline-none text-[10px] text-star placeholder:text-slate-500"
+                  onKeyDown={e => {
+                    if (e.key !== 'Enter') return
+                    const q = e.currentTarget.value.trim().toLowerCase()
+                    if (!q) return
+                    const hit = displayClusters.find(c =>
+                      String(c.display_name || '').toLowerCase().includes(q) ||
+                      String(c.medoid_label || '').toLowerCase().includes(q) ||
+                      String(c.cluster_id || c.id || '').toLowerCase().includes(q)
+                    )
+                    if (hit) setSelectedClusterId(hit.id || hit.cluster_id)
+                  }}
+                />
+              </div>
+              <button className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
+                style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', color: '#94a3b8', backdropFilter: 'blur(14px)' }}>
+                <SlidersHorizontal size={12} />
+              </button>
+              <button onClick={resetScene} className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
+                style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', color: '#94a3b8', backdropFilter: 'blur(14px)' }}>
+                <RotateCcw size={12} />
+              </button>
+            </div>
+          </div>
+
+          {/* Bottom in-map controls */}
+          {!isTableView && <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center rounded-xl overflow-hidden"
+            style={{ background: 'rgba(3,8,15,0.84)', border: '1px solid rgba(71,85,105,0.42)', backdropFilter: 'blur(14px)', boxShadow: '0 10px 30px rgba(0,0,0,0.35)' }}>
+            <button onClick={() => sendSceneCommand('zoomOut')} className="w-10 h-9 flex items-center justify-center text-slate-300 hover:text-cyan transition-colors"><Minus size={14} /></button>
+            <div className="w-16 h-9 flex items-center justify-center text-[12px] text-star" style={{ borderLeft: '1px solid rgba(71,85,105,0.35)', borderRight: '1px solid rgba(71,85,105,0.35)' }}>100%</div>
+            <button onClick={() => sendSceneCommand('zoomIn')} className="w-10 h-9 flex items-center justify-center text-slate-300 hover:text-cyan transition-colors"><Plus size={16} /></button>
+            <button onClick={() => sendSceneCommand('fullscreen')} className="w-10 h-9 flex items-center justify-center text-slate-300 hover:text-cyan transition-colors" style={{ borderLeft: '1px solid rgba(71,85,105,0.35)' }}><Maximize2 size={15} /></button>
+          </div>}
+        </div>
+
+        {/* ── RIGHT INSPECTOR ───────────────────────────────────────────────── */}
+        <div className="flex-shrink-0 overflow-hidden"
+          style={{
+            width: 'clamp(300px, 21vw, 340px)',
+            background: 'linear-gradient(180deg, #060d1a 0%, #03080f 100%)',
+            borderLeft: '1px solid rgba(26,45,74,0.75)',
+          }}>
+          {selectedClusterId
+            ? <div className="h-full overflow-hidden"><RightInspector clusterId={selectedClusterId} /></div>
+            : <DefaultInspector
+                health={health}
+                clusters={displayClusters}
+                fields={fields.filter(([f]) => !selectedFields.length || selectedFields.includes(f))}
+              />
+          }
+        </div>
+      </div>
+
+    </div>
+  )
+}

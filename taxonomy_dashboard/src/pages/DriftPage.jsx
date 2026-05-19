@@ -1,251 +1,236 @@
-import { useEffect, useState } from 'react'
-import { TrendingUp, Zap, Calendar, Layers, AlertTriangle } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { AlertTriangle, Calendar, GitBranch, Layers, Search, Sparkles, TrendingUp, Zap } from 'lucide-react'
 import { useAppCtx } from '../context/AppContext.jsx'
 import { fmt, fmtDate } from '../utils/format.js'
 import { getFieldColor } from '../utils/colors.js'
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
-  LineChart, Line, CartesianGrid, Legend,
-} from 'recharts'
 
-function NewestClusterRow({ cluster, onClick }) {
-  const color = getFieldColor(cluster.field_name)
+function StoryPanel({ title, subtitle, icon: Icon = GitBranch, children }) {
   return (
-    <div className="emerging-row" onClick={() => onClick(cluster.id)}>
-      <span className="emerging-icon" style={{ color: '#569cd6' }}><Zap size={12} /></span>
-      <div className="emerging-main">
-        <span className="emerging-name">
-          {cluster.display_name || <span className="unnamed">unnamed</span>}
-        </span>
-        <span className="emerging-field" style={{ color }}>{cluster.field_name}</span>
+    <section className="chart-card">
+      <div className="chart-card-title" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <Icon size={14} />
+        {title}
+        {subtitle && <span className="chart-card-subtitle">- {subtitle}</span>}
       </div>
-      <div className="emerging-stats">
-        {cluster.cluster_size != null && (
-          <span className="emerging-size">{fmt(cluster.cluster_size)}</span>
-        )}
-        {cluster.is_true_anomaly_cluster && (
-          <span style={{ fontSize: 10, color: 'var(--red)', fontWeight: 700 }}>anomaly</span>
+      <div className="chart-card-body chart-card-body--list">{children}</div>
+    </section>
+  )
+}
+
+function DriftInsight({ title, metric, text, fields = [], severity = 'info' }) {
+  const color = severity === 'risk' ? '#ef4444' : severity === 'watch' ? '#f59e0b' : '#00d4ff'
+  return (
+    <div className="insight-card" style={{ background: `${color}0b`, borderColor: `${color}30` }}>
+      <div className="ic-body">
+        <div className="ic-header">
+          <span className="ic-title">{title}</span>
+          <span className="ic-value" style={{ color }}>{metric}</span>
+        </div>
+        <p className="ic-reason">{text}</p>
+        {!!fields.length && (
+          <div className="ic-examples">
+            {fields.map(f => <span key={f} className="ic-example-chip" style={{ color: getFieldColor(f) }}>{f}</span>)}
+          </div>
         )}
       </div>
     </div>
   )
 }
 
-function FieldBar({ field, maxClusters }) {
+function ClusterRow({ cluster, onOpen }) {
+  const color = getFieldColor(cluster.field_name)
+  const created = cluster.created_at ? fmtDate(cluster.created_at) : null
+  return (
+    <button className="emerging-row" style={{ textAlign: 'left' }} onClick={() => onOpen(cluster.id)}>
+      <span className="emerging-icon" style={{ color }}><Zap size={12} /></span>
+      <div className="emerging-main">
+        <span className="emerging-name">{cluster.display_name || cluster.medoid_label || cluster.cluster_id}</span>
+        <span className="emerging-field" style={{ color }}>{cluster.field_name}{created ? ` · ${created}` : ''}</span>
+      </div>
+      <div className="emerging-stats">
+        <span className="emerging-size">{fmt(cluster.cluster_size)}</span>
+        {cluster.is_true_anomaly_cluster && <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 700 }}>anomaly</span>}
+      </div>
+    </button>
+  )
+}
+
+function FieldDriftRow({ field, max }) {
   const color = getFieldColor(field.field_name)
-  const barW  = maxClusters > 0 ? Math.max(3, (field.total_clusters / maxClusters) * 100) : 3
-  const anomPct = field.total_clusters > 0 && field.anomaly_count
-    ? Math.round((field.anomaly_count / field.total_clusters) * 100)
-    : 0
+  const width = max ? Math.max(4, (field.total_clusters / max) * 100) : 4
   return (
     <div className="field-drift-row">
       <span className="fdr-dot" style={{ background: color }} />
       <span className="fdr-name">{field.field_name}</span>
       <div className="fdr-bar-wrap">
-        <div className="fdr-bar" style={{ width: `${barW}%`, background: color + '66' }} />
+        <div className="fdr-bar" style={{ width: `${width}%`, background: `${color}66` }} />
       </div>
       <span className="fdr-count">{fmt(field.total_clusters)}</span>
-      {anomPct > 0 && <span className="fdr-anom">{anomPct}% anom</span>}
+      {field.last_updated && <span className="fdr-anom">{fmtDate(field.last_updated)}</span>}
     </div>
   )
 }
 
-const TOOLTIP_STYLE = {
-  backgroundColor: '#252526',
-  border: '1px solid #3e3e42',
-  borderRadius: 6,
-  color: '#ccc',
-  fontSize: 12,
+function TokenThemes({ clusters }) {
+  const stop = new Set(['the', 'and', 'for', 'with', 'from', 'this', 'that', 'into', 'cluster', 'unknown', 'other'])
+  const counts = {}
+  clusters.forEach(c => {
+    const text = `${c.display_name || ''} ${c.medoid_label || ''}`.toLowerCase()
+    text.split(/[^a-z0-9]+/).filter(t => t.length > 3 && !stop.has(t)).forEach(t => { counts[t] = (counts[t] || 0) + 1 })
+  })
+  const themes = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 12)
+  if (!themes.length) return <div className="state-empty">No repeated terminology available in the recent cluster sample.</div>
+  return (
+    <div className="ic-examples">
+      {themes.map(([theme, count]) => <span key={theme} className="ic-example-chip">{theme} · {count}</span>)}
+    </div>
+  )
 }
 
 export default function DriftPage() {
-  const { setSelectedClusterId } = useAppCtx()
-  const [data,    setData]    = useState(null)
+  const { setSelectedClusterId, navigate } = useAppCtx()
+  const [data, setData] = useState(null)
+  const [anomalies, setAnomalies] = useState(null)
+  const [priorities, setPriorities] = useState([])
   const [loading, setLoading] = useState(false)
-  const [error,   setError]   = useState(null)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     setLoading(true)
-    setError(null)
-    fetch('/api/drift-summary')
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
-      .then(d => setData(d))
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+    Promise.allSettled([
+      fetch('/api/drift-summary').then(r => r.json()),
+      fetch('/api/anomaly-intelligence').then(r => r.json()),
+      fetch('/api/review-priorities').then(r => r.json()),
+    ]).then(([drift, anomaly, priority]) => {
+      if (drift.status === 'fulfilled') setData(drift.value)
+      if (anomaly.status === 'fulfilled') setAnomalies(anomaly.value)
+      if (priority.status === 'fulfilled' && Array.isArray(priority.value)) setPriorities(priority.value)
+      if (drift.status === 'rejected') setError(drift.reason?.message || 'Unable to load drift data')
+    }).finally(() => setLoading(false))
   }, [])
 
-  // Server returns: { run_timeline, newest_clusters, field_stats }
-  const runTimeline    = data?.run_timeline    || []
   const newestClusters = data?.newest_clusters || []
-  const fieldStats     = data?.field_stats     || []
+  const fieldStats = data?.field_stats || []
+  const anomalyFields = anomalies?.summary?.by_field || []
+  const maxClusters = Math.max(...fieldStats.map(f => Number(f.total_clusters) || 0), 1)
 
-  const hasRunHistory = runTimeline.length > 0
+  const driftInsights = useMemo(() => {
+    const out = []
+    const newestAnomalies = newestClusters.filter(c => c.is_true_anomaly_cluster)
+    if (newestClusters.length) {
+      out.push({
+        title: 'What changed recently',
+        metric: fmt(newestClusters.length),
+        text: `${fmt(newestClusters.length)} clusters are newest in the registry sample. These represent the freshest taxonomy surfaces available from current run metadata.`,
+        fields: [...new Set(newestClusters.slice(0, 5).map(c => c.field_name))],
+      })
+    }
+    if (newestAnomalies.length) {
+      out.push({
+        title: 'Recent change contains anomaly risk',
+        metric: fmt(newestAnomalies.length),
+        text: `${fmt(newestAnomalies.length)} of the newest clusters are anomalous, meaning recent language includes concepts not yet fully integrated into stable taxonomy neighborhoods.`,
+        fields: [...new Set(newestAnomalies.map(c => c.field_name))],
+        severity: 'risk',
+      })
+    }
+    const hot = [...anomalyFields].sort((a, b) => (b.anomaly_clusters || 0) - (a.anomaly_clusters || 0))[0]
+    if (hot) {
+      out.push({
+        title: `${hot.field_name} is the primary instability zone`,
+        metric: fmt(hot.anomaly_clusters),
+        text: `${hot.field_name} contributes the largest anomaly load. This is where taxonomy evolution, review, or recoverability scoring will have the most impact.`,
+        fields: [hot.field_name],
+        severity: 'watch',
+      })
+    }
+    if (priorities.length) {
+      out.push({
+        title: 'Drift creates review work',
+        metric: fmt(priorities.length),
+        text: `${priorities.length} review-priority clusters are flagged by naming, anomaly, or compression signals. These are likely instability zones rather than random cleanup tasks.`,
+        fields: [...new Set(priorities.slice(0, 5).map(p => p.field_name))],
+        severity: 'watch',
+      })
+    }
+    return out
+  }, [newestClusters, anomalyFields, priorities])
 
-  // Aggregate run timeline by date for chart
-  const timelineByDate = {}
-  for (const r of runTimeline) {
-    if (!timelineByDate[r.run_date]) timelineByDate[r.run_date] = { date: r.run_date, count: 0 }
-    timelineByDate[r.run_date].count += r.run_count || 0
+  function openCluster(id) {
+    navigate('clusters')
+    setSelectedClusterId(id)
   }
-  const timelineChart = Object.values(timelineByDate)
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .slice(-30)
-
-  const maxClusters = Math.max(...fieldStats.map(f => f.total_clusters || 0), 1)
-  const totalAnomalies = newestClusters.filter(c => c.is_true_anomaly_cluster).length
 
   return (
     <div className="page-wrap">
       <div className="page-header">
         <div>
-          <h1 className="page-title">Drift &amp; Emerging Patterns</h1>
-          <p className="page-subtitle">
-            {hasRunHistory
-              ? 'Track taxonomy evolution across clustering runs'
-              : 'Static snapshot — cluster distribution and emerging signals'}
-          </p>
-        </div>
-        <div className="drift-summary-badges">
-          <span className="dsb-item">
-            <span className="dsb-label">Fields</span>
-            {fieldStats.length}
-          </span>
-          <span className="dsb-item">
-            <Layers size={11} />
-            {fmt(fieldStats.reduce((s, f) => s + (f.total_clusters || 0), 0))} clusters
-          </span>
-          {totalAnomalies > 0 && (
-            <span className="dsb-item dsb-item--warn">
-              <AlertTriangle size={11} /> {totalAnomalies} new anomalies
-            </span>
-          )}
+          <h1 className="page-title">Semantic Drift Intelligence</h1>
+          <p className="page-subtitle">Where taxonomy language is changing, fragmenting, and creating review pressure.</p>
         </div>
       </div>
 
       {error && <div className="state-error">⚠ {error}</div>}
-      {loading && <div className="state-loading">Loading drift data…</div>}
+      {loading && <div className="state-loading">Reading semantic drift signals...</div>}
 
-      {!loading && !error && data && (
+      {!loading && !error && (
         <>
-          {/* No run history notice */}
-          {!hasRunHistory && (
-            <div className="drift-no-history">
-              <strong>No clustering run history found.</strong> Showing static snapshot from current cluster data.
-              <br />
-              Run history requires a <code>taxonomy_cluster_runs</code> table.
+          <StoryPanel title="Drift Narrative" subtitle="what changed recently" icon={Sparkles}>
+            <div className="insights-grid">
+              {driftInsights.map((insight, i) => <DriftInsight key={i} {...insight} />)}
+              {!driftInsights.length && <div className="state-empty">No drift narrative can be generated from the available metadata yet.</div>}
             </div>
-          )}
+          </StoryPanel>
 
-          {/* Run timeline chart — only when history exists */}
-          {hasRunHistory && timelineChart.length > 1 && (
-            <div className="chart-card" style={{ marginBottom: 20 }}>
-              <div className="chart-card-title">Clustering Activity (last 30 days)</div>
-              <div className="chart-card-body" style={{ height: 180 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={timelineChart} margin={{ top: 4, right: 16, left: 0, bottom: 4 }}>
-                    <CartesianGrid stroke="#2d2d30" strokeDasharray="3 3" />
-                    <XAxis dataKey="date" tick={{ fill: '#858585', fontSize: 10 }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fill: '#858585', fontSize: 10 }} axisLine={false} tickLine={false} width={36} />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#ffffff0a' }} />
-                    <Bar dataKey="count" name="Run Count" radius={[3, 3, 0, 0]}>
-                      {timelineChart.map((_, i) => (
-                        <Cell key={i} fill="#569cd6" />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          )}
-
-          {/* Main two-col layout */}
           <div className="drift-two-col">
-            {/* Newest / recently added clusters */}
-            <div>
-              <div className="drift-section-title">
-                <Calendar size={13} style={{ marginRight: 6 }} />
-                Recently Added Clusters
-              </div>
-              {newestClusters.length === 0
-                ? <div className="state-empty">No cluster data available.</div>
-                : (
-                  <div className="emerging-list">
-                    {newestClusters.slice(0, 10).map((c, i) => (
-                      <NewestClusterRow
-                        key={c.id || i}
-                        cluster={c}
-                        onClick={id => setSelectedClusterId(id)}
-                      />
-                    ))}
-                  </div>
-                )
-              }
-            </div>
+            <StoryPanel title="Emerging Cluster Candidates" subtitle="fresh semantic regions" icon={Zap}>
+              {newestClusters.slice(0, 12).map(c => <ClusterRow key={c.id} cluster={c} onOpen={openCluster} />)}
+              {!newestClusters.length && <div className="state-empty">No recent cluster sample returned.</div>}
+            </StoryPanel>
 
-            {/* Anomalies in new clusters */}
-            <div>
-              <div className="drift-section-title">
-                <Zap size={13} style={{ marginRight: 6 }} />
-                Anomalies in Recent Clusters
-              </div>
-              {newestClusters.filter(c => c.is_true_anomaly_cluster).length === 0
-                ? <div className="state-empty" style={{ color: '#4ec994' }}>
-                    No anomalies in the most recent clusters.
+            <StoryPanel title="Fields With Rising Pressure" subtitle="where instability concentrates" icon={AlertTriangle}>
+              {[...anomalyFields].sort((a, b) => (b.anomaly_clusters || 0) - (a.anomaly_clusters || 0)).slice(0, 10).map(f => (
+                <div key={f.field_name} className="field-drift-row">
+                  <span className="fdr-dot" style={{ background: getFieldColor(f.field_name) }} />
+                  <span className="fdr-name">{f.field_name}</span>
+                  <div className="fdr-bar-wrap">
+                    <div className="fdr-bar" style={{ width: `${Math.max(4, (f.anomaly_clusters / Math.max(1, anomalyFields[0]?.anomaly_clusters || 1)) * 100)}%`, background: '#ef444466' }} />
                   </div>
-                : (
-                  <div className="emerging-list">
-                    {newestClusters.filter(c => c.is_true_anomaly_cluster).slice(0, 10).map((c, i) => (
-                      <NewestClusterRow
-                        key={c.id || i}
-                        cluster={c}
-                        onClick={id => setSelectedClusterId(id)}
-                      />
-                    ))}
-                  </div>
-                )
-              }
-            </div>
+                  <span className="fdr-count">{fmt(f.anomaly_clusters)}</span>
+                  <span className="fdr-anom">{fmt(f.anomaly_occurrences)} occ.</span>
+                </div>
+              ))}
+              {!anomalyFields.length && <div className="state-empty">Anomaly pressure by field is not available.</div>}
+            </StoryPanel>
           </div>
 
-          {/* Field distribution */}
-          {fieldStats.length > 0 && (
-            <div className="chart-card" style={{ marginTop: 4 }}>
-              <div className="chart-card-title">
-                <TrendingUp size={12} style={{ marginRight: 6 }} />
-                Cluster Distribution by Field
-              </div>
-              <div className="chart-card-body chart-card-body--list">
-                <div className="field-drift-list">
-                  {fieldStats.map((f, i) => (
-                    <FieldBar key={f.field_name || i} field={f} maxClusters={maxClusters} />
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
+          <StoryPanel title="New Recurring Terminology" subtitle="language themes in newest clusters" icon={Search}>
+            <p className="ic-reason">These terms repeat inside the newest cluster sample and can indicate new operational language or taxonomy drift. Counts are derived from display names and medoid labels only.</p>
+            <TokenThemes clusters={newestClusters} />
+          </StoryPanel>
 
-          {/* Field size bar chart */}
-          {fieldStats.length > 1 && (
-            <div className="chart-card" style={{ marginTop: 16 }}>
-              <div className="chart-card-title">Total Items by Field</div>
-              <div className="chart-card-body" style={{ height: 160 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={fieldStats.map(f => ({ name: f.field_name, clusters: f.total_clusters, items: Number(f.total_labels) || 0 }))}
-                    margin={{ top: 4, right: 8, left: 0, bottom: 4 }}
-                    layout="vertical"
-                  >
-                    <XAxis type="number" tick={{ fill: '#858585', fontSize: 10 }} axisLine={false} tickLine={false} />
-                    <YAxis type="category" dataKey="name" tick={{ fill: '#858585', fontSize: 10 }} axisLine={false} tickLine={false} width={110} />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#ffffff08' }} />
-                    <Legend wrapperStyle={{ fontSize: 11, color: '#858585' }} />
-                    <Bar dataKey="clusters" name="Clusters" fill="#569cd6" radius={[0, 3, 3, 0]} />
-                    {fieldStats.some(f => f.total_labels) && (
-                      <Bar dataKey="items" name="Items" fill="#4ec9b088" radius={[0, 3, 3, 0]} />
-                    )}
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+          <div className="charts-grid" style={{ marginTop: 16 }}>
+            <StoryPanel title="Semantic Fragmentation Surface" subtitle="cluster volume by field" icon={Layers}>
+              {fieldStats.map(f => <FieldDriftRow key={f.field_name} field={f} max={maxClusters} />)}
+            </StoryPanel>
+
+            <StoryPanel title="Cluster Instability Zones" subtitle="highest review priority" icon={TrendingUp}>
+              {priorities.slice(0, 10).map(p => (
+                <button key={p.id} className="review-row" onClick={() => openCluster(p.id)}>
+                  <span className="rr-field" style={{ color: getFieldColor(p.field_name) }}>{p.field_name}</span>
+                  <span className="rr-name">{p.display_name || p.medoid_label || p.cluster_id}</span>
+                  <div className="rr-right">
+                    {p.reasons?.slice(0, 2).map(r => <span key={r} className="rr-reason-chip">{r.replace(/_/g, ' ')}</span>)}
+                  </div>
+                </button>
+              ))}
+              {!priorities.length && <div className="state-empty">No instability priorities returned.</div>}
+            </StoryPanel>
+          </div>
+
+          {!data?.run_timeline?.length && (
+            <div className="drift-no-history">
+              <strong>Run-to-run drift history is not computed yet.</strong> This page is currently using newest cluster timestamps, anomaly pressure, and review signals as the available drift evidence.
             </div>
           )}
         </>

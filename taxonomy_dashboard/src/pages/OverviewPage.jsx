@@ -1,524 +1,655 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
-  RefreshCw, AlertTriangle, CheckCircle, Info, Zap, ArrowRight,
-  Layers, GitMerge, Cpu, Activity,
+  Activity, AlertTriangle, ArrowRight, CheckCircle, Database, GitMerge,
+  Layers, LineChart, ShieldCheck, Sparkles, Target, Zap,
 } from 'lucide-react'
 import { useAppCtx } from '../context/AppContext.jsx'
-import FieldDistributionChart from '../components/charts/FieldDistributionChart.jsx'
-import ClusterSizeHistogram from '../components/charts/ClusterSizeHistogram.jsx'
-import { fmt, pct } from '../utils/format.js'
+import { fmt } from '../utils/format.js'
 import { getFieldColor } from '../utils/colors.js'
 
-// ── Semantic Compression Hero ─────────────────────────────────────────────────
-function SemanticHero({ health, compression, medoid }) {
-  const namingRate = health
-    ? Math.round((health.named_clusters / (health.total_clusters || 1)) * 100)
-    : null
-  const anomalyPct = health && health.anomaly_clusters !== null
-    ? Math.round((health.anomaly_clusters / (health.total_clusters || 1)) * 100)
-    : null
-  const embCoverage = medoid?.coverage_rate != null
-    ? Math.round(medoid.coverage_rate * 100)
-    : null
+const EMPTY = []
 
-  const isLoading = !health && !compression
+function safeArray(value) {
+  return Array.isArray(value) ? value : EMPTY
+}
 
-  if (isLoading) {
-    return (
-      <div className="sc-hero">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="sc-stat skeleton" />
+function n(value, fallback = 0) {
+  const x = Number(value)
+  return Number.isFinite(x) ? x : fallback
+}
+
+function pct(value, digits = 0) {
+  if (value == null || !Number.isFinite(Number(value))) return '—'
+  return `${(Number(value) * 100).toFixed(digits)}%`
+}
+
+function rate(part, total) {
+  const p = n(part)
+  const t = n(total)
+  return t > 0 ? p / t : null
+}
+
+function scrollToSection(id) {
+  const el = document.getElementById(id)
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function normalizeLabel(value) {
+  if (value == null) return '—'
+  return String(value).replace(/_/g, ' ')
+}
+
+function Panel({ id, title, subtitle, icon: Icon = Activity, children, compact = false }) {
+  return (
+    <section id={id} className="rounded-2xl overflow-hidden scroll-mt-20" style={{ background: 'rgba(5,11,22,0.78)', border: '1px solid rgba(26,45,74,0.78)', boxShadow: '0 18px 40px rgba(0,0,0,0.18)' }}>
+      <div className="flex items-center justify-between gap-4 px-5 py-4" style={{ borderBottom: '1px solid rgba(26,45,74,0.62)' }}>
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(0,212,255,0.08)', border: '1px solid rgba(0,212,255,0.20)', color: '#00d4ff' }}>
+            <Icon size={16} />
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-[14px] font-bold text-star tracking-tight">{title}</h2>
+            {subtitle && <p className="text-[10.5px] text-dust mt-0.5 truncate">{subtitle}</p>}
+          </div>
+        </div>
+      </div>
+      <div className={compact ? 'p-0' : 'p-5'}>{children}</div>
+    </section>
+  )
+}
+
+function MetricCard({ label, value, note, color = '#00d4ff', icon: Icon = Sparkles, onClick }) {
+  const Wrapper = onClick ? 'button' : 'div'
+  return (
+    <Wrapper
+      onClick={onClick}
+      className="rounded-2xl p-4 text-left min-w-0 transition-all duration-150 hover:-translate-y-0.5"
+      style={{ background: `linear-gradient(135deg, ${color}10, rgba(255,255,255,0.018))`, border: `1px solid ${color}28`, boxShadow: `0 0 26px ${color}08` }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[9px] uppercase tracking-[0.22em] font-bold" style={{ color }}>{label}</div>
+          <div className="mt-2 text-[24px] leading-none font-bold truncate" style={{ color, textShadow: `0 0 18px ${color}40` }}>{value}</div>
+        </div>
+        <Icon size={17} style={{ color, opacity: 0.75 }} />
+      </div>
+      {note && <div className="mt-3 text-[11px] leading-snug" style={{ color: '#64748b' }}>{note}</div>}
+    </Wrapper>
+  )
+}
+
+function Progress({ value, color = '#00d4ff', label, right }) {
+  const width = Math.max(0, Math.min(100, n(value) * 100))
+  return (
+    <div className="py-1.5">
+      {(label || right) && (
+        <div className="flex justify-between gap-3 mb-1.5 text-[10.5px]">
+          <span style={{ color: '#94a3b8' }}>{label}</span>
+          <span className="font-mono" style={{ color }}>{right ?? pct(value)}</span>
+        </div>
+      )}
+      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(26,45,74,0.72)' }}>
+        <div className="h-full rounded-full" style={{ width: `${width}%`, background: `linear-gradient(90deg, ${color}, ${color}88)`, boxShadow: `0 0 9px ${color}55` }} />
+      </div>
+    </div>
+  )
+}
+
+function DataRow({ label, value, color = '#94a3b8', chip = false }) {
+  if (value == null || value === '') return null
+  return (
+    <div className="flex items-center justify-between gap-3 py-2" style={{ borderBottom: '1px solid rgba(26,45,74,0.36)' }}>
+      <span className="text-[10.5px]" style={{ color: '#64748b' }}>{label}</span>
+      {chip ? (
+        <span className="text-[10px] px-2 py-0.5 rounded-md font-semibold" style={{ color, background: `${color}14`, border: `1px solid ${color}28` }}>{value}</span>
+      ) : (
+        <span className="text-[10.5px] text-right truncate max-w-[65%]" style={{ color }}>{value}</span>
+      )}
+    </div>
+  )
+}
+
+function StatusPill({ status }) {
+  const color = status === 'Healthy' ? '#10b981' : status === 'Watch' ? '#f97316' : '#ef4444'
+  return (
+    <span className="text-[9.5px] px-2 py-0.5 rounded-md font-semibold" style={{ color, background: `${color}16`, border: `1px solid ${color}30` }}>
+      {status}
+    </span>
+  )
+}
+
+function FieldBarRow({ field, left, right, percent, color }) {
+  const c = color || getFieldColor(field)
+  return (
+    <div className="py-2.5" style={{ borderBottom: '1px solid rgba(26,45,74,0.32)' }}>
+      <div className="flex items-center gap-3">
+        <span className="w-[150px] text-[11px] truncate" style={{ color: c }}>{field}</span>
+        <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(26,45,74,0.72)' }}>
+          <div className="h-full rounded-full" style={{ width: `${Math.max(4, Math.min(100, percent))}%`, background: `linear-gradient(90deg, ${c}, ${c}77)`, boxShadow: `0 0 8px ${c}44` }} />
+        </div>
+        <span className="w-[86px] text-right text-[10.5px]" style={{ color: '#94a3b8' }}>{left}</span>
+        <span className="w-[88px] text-right text-[10.5px] font-mono" style={{ color: '#cbd5e1' }}>{right}</span>
+      </div>
+    </div>
+  )
+}
+
+function ClusterRow({ item, onClick, rightLabel = 'Open' }) {
+  const color = getFieldColor(item.field_name)
+  return (
+    <button onClick={() => onClick?.(item.id)} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left transition-colors hover:bg-white/[0.035]" style={{ border: '1px solid rgba(26,45,74,0.35)' }}>
+      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color, boxShadow: `0 0 8px ${color}` }} />
+      <div className="min-w-0 flex-1">
+        <div className="text-[11px] text-star truncate">{item.display_name || item.medoid_label || item.cluster_id || 'Unnamed cluster'}</div>
+        <div className="text-[9.5px] truncate" style={{ color: '#64748b' }}>{item.field_name} · {item.cluster_id}</div>
+      </div>
+      <span className="text-[10px] px-2 py-0.5 rounded-md flex-shrink-0" style={{ color, background: `${color}13`, border: `1px solid ${color}25` }}>{rightLabel}</span>
+    </button>
+  )
+}
+
+function ActionCard({ title, detail, severity = 'info', metric, onClick }) {
+  const color = severity === 'critical' ? '#ef4444' : severity === 'warning' ? '#f97316' : severity === 'good' ? '#10b981' : '#00d4ff'
+  const Icon = severity === 'good' ? CheckCircle : severity === 'critical' || severity === 'warning' ? AlertTriangle : Sparkles
+  const Wrapper = onClick ? 'button' : 'div'
+  return (
+    <Wrapper onClick={onClick} className="rounded-xl px-3 py-3 text-left flex items-start gap-3 transition-all hover:bg-white/[0.035]" style={{ background: `${color}08`, border: `1px solid ${color}24` }}>
+      <Icon size={15} className="mt-0.5 flex-shrink-0" style={{ color }} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-[11px] font-semibold text-star truncate">{title}</div>
+          {metric && <span className="text-[10px] font-mono flex-shrink-0" style={{ color }}>{metric}</span>}
+        </div>
+        <div className="text-[10px] leading-snug mt-1" style={{ color: '#64748b' }}>{detail}</div>
+      </div>
+    </Wrapper>
+  )
+}
+
+function SectionNav() {
+  const items = [
+    ['summary', 'Overview'],
+    ['actions', 'Actions'],
+    ['matrix', 'Field Matrix'],
+    ['compression', 'Compression'],
+    ['quality', 'Quality'],
+    ['anomalies', 'Anomalies'],
+    ['merge', 'Merge'],
+    ['coverage', 'Coverage'],
+    ['metadata', 'Metadata'],
+  ]
+  return (
+    <div className="sticky top-0 z-20 -mx-1 mb-5 py-2" style={{ background: 'linear-gradient(180deg, rgba(2,5,10,0.98), rgba(2,5,10,0.88))', backdropFilter: 'blur(12px)' }}>
+      <div className="flex flex-wrap gap-2">
+        {items.map(([id, label]) => (
+          <button key={id} onClick={() => scrollToSection(id)} className="px-3 py-1.5 rounded-lg text-[10px] font-semibold transition-all hover:text-star" style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(26,45,74,0.70)', color: '#94a3b8' }}>
+            {label}
+          </button>
         ))}
       </div>
-    )
-  }
-
-  return (
-    <div className="sc-hero">
-      <div className="sc-stat sc-stat--blue">
-        <span className="sc-stat-val">{fmt(compression?.raw_label_count ?? health?.total_label_rows)}</span>
-        <span className="sc-stat-label">Raw Labels</span>
-        <span className="sc-stat-sub">distinct values in label map</span>
-      </div>
-      <div className="sc-stat sc-stat--teal">
-        <span className="sc-stat-val">{fmt(health?.total_clusters ?? compression?.total_clusters)}</span>
-        <span className="sc-stat-label">Clusters</span>
-        <span className="sc-stat-sub">{health?.fields_count ? `${health.fields_count} fields` : 'taxonomy groups'}</span>
-      </div>
-      <div className="sc-stat sc-stat--purple">
-        <span className="sc-stat-val">
-          {compression?.compression_ratio != null
-            ? `${compression.compression_ratio}×`
-            : <span className="sc-stat-empty">—</span>}
-        </span>
-        <span className="sc-stat-label">Compression</span>
-        <span className="sc-stat-sub">raw labels per cluster</span>
-      </div>
-      <div className="sc-stat sc-stat--red">
-        <span className="sc-stat-val">
-          {health?.anomaly_clusters !== null && health?.anomaly_clusters !== undefined
-            ? fmt(health.anomaly_clusters)
-            : <span className="sc-stat-empty">N/A</span>}
-        </span>
-        <span className="sc-stat-label">Anomaly Load</span>
-        <span className="sc-stat-sub">{anomalyPct != null ? `${anomalyPct}% of clusters` : 'no anomaly data'}</span>
-      </div>
-      <div className="sc-stat sc-stat--green">
-        <span className="sc-stat-val">
-          {namingRate != null
-            ? `${namingRate}%`
-            : <span className="sc-stat-empty">—</span>}
-        </span>
-        <span className="sc-stat-label">Named</span>
-        <span className="sc-stat-sub">
-          {embCoverage != null ? `${embCoverage}% medoid coverage` : 'clusters with display names'}
-        </span>
-      </div>
     </div>
   )
 }
 
-// ── Insight Card ─────────────────────────────────────────────────────────────
-const SEVERITY_META = {
-  critical: { icon: AlertTriangle, color: '#f44747', bg: 'rgba(244,71,71,0.08)', border: 'rgba(244,71,71,0.25)' },
-  warning:  { icon: AlertTriangle, color: '#dcdcaa', bg: 'rgba(220,220,170,0.07)', border: 'rgba(220,220,170,0.25)' },
-  info:     { icon: Info,          color: '#569cd6', bg: 'rgba(86,156,214,0.07)',  border: 'rgba(86,156,214,0.2)'  },
-}
-
-function InsightCard({ insight, onAction }) {
-  const meta = SEVERITY_META[insight.severity] || SEVERITY_META.info
-  const Icon = meta.icon
+function FieldHealthMatrix({ rows }) {
   return (
-    <div
-      className="insight-card"
-      style={{ background: meta.bg, borderColor: meta.border }}
-      onClick={() => onAction && onAction(insight)}
-    >
-      <div className="ic-left">
-        <span className="ic-icon" style={{ color: meta.color }}><Icon size={14} /></span>
-      </div>
-      <div className="ic-body">
-        <div className="ic-header">
-          <span className="ic-title">{insight.title}</span>
-          <span className="ic-value" style={{ color: meta.color }}>{insight.value}</span>
-        </div>
-        {insight.affected_field && (
-          <span className="ic-field" style={{ color: getFieldColor(insight.affected_field) }}>
-            {insight.affected_field}
-          </span>
-        )}
-        <p className="ic-reason">{insight.reason}</p>
-        {insight.examples && (
-          <div className="ic-examples">
-            {insight.examples.slice(0, 2).map((e, i) => (
-              <span key={i} className="ic-example-chip" title={e.name}>
-                {(e.name || '').slice(0, 22)}{e.size ? ` (${fmt(e.size)})` : ''}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      <ArrowRight size={13} className="ic-arrow" />
-    </div>
-  )
-}
-
-// ── Top Cluster Row ───────────────────────────────────────────────────────────
-function TopClusterRow({ cluster, maxSize, onClick }) {
-  const p  = maxSize ? Math.max(4, Math.round((cluster.cluster_size / maxSize) * 100)) : 4
-  const fc = getFieldColor(cluster.field_name)
-  return (
-    <div className="top-cluster-row" onClick={() => onClick(cluster.id)}>
-      <div className="tcr-bar" style={{ width: `${p}%`, background: fc + '18' }} />
-      <span className="tcr-field" style={{ color: fc }}>{cluster.field_name}</span>
-      <span className="tcr-name">{cluster.display_name || <span className="unnamed">unnamed</span>}</span>
-      <div className="tcr-right">
-        <span className="tcr-size">{fmt(cluster.cluster_size)}</span>
-        {cluster.is_true_anomaly_cluster && <span className="tcr-anom-badge">anom</span>}
-      </div>
-    </div>
-  )
-}
-
-// ── Review Priority Row ───────────────────────────────────────────────────────
-function ReviewRow({ item, onClick }) {
-  const fc = getFieldColor(item.field_name)
-  const sc = item.priority_score > 0.6 ? '#f44747' : item.priority_score > 0.3 ? '#dcdcaa' : '#858585'
-  return (
-    <div className="review-row" onClick={() => onClick(item.id)}>
-      <div className="rr-bar" style={{ width: `${Math.round(item.priority_score * 100)}%`, background: sc + '22' }} />
-      <span className="rr-field" style={{ color: fc }}>{item.field_name}</span>
-      <span className="rr-name">{item.display_name || item.medoid_label || <span className="unnamed">unnamed</span>}</span>
-      <div className="rr-right">
-        <div className="rr-reasons">
-          {item.reasons.map(r => (
-            <span key={r} className="rr-reason-chip">{r.replace(/_/g, ' ')}</span>
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[1040px] text-left text-[10.5px]">
+        <thead style={{ background: 'rgba(255,255,255,0.025)', color: '#64748b' }}>
+          <tr>
+            <th className="px-3 py-2 font-semibold">Field</th>
+            <th className="px-3 py-2 font-semibold text-right">Raw Labels</th>
+            <th className="px-3 py-2 font-semibold text-right">Clusters</th>
+            <th className="px-3 py-2 font-semibold text-right">Compression</th>
+            <th className="px-3 py-2 font-semibold text-right">Named</th>
+            <th className="px-3 py-2 font-semibold text-right">Anomaly</th>
+            <th className="px-3 py-2 font-semibold text-right">Recovery</th>
+            <th className="px-3 py-2 font-semibold text-right">Medoid Risk</th>
+            <th className="px-3 py-2 font-semibold text-right">Run</th>
+            <th className="px-3 py-2 font-semibold text-right">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.field_name} style={{ borderTop: '1px solid rgba(26,45,74,0.35)' }}>
+              <td className="px-3 py-2 truncate font-semibold" style={{ color: getFieldColor(r.field_name) }}>{r.field_name}</td>
+              <td className="px-3 py-2 text-right text-dust font-mono">{fmt(r.raw_labels)}</td>
+              <td className="px-3 py-2 text-right text-dust font-mono">{fmt(r.clusters)}</td>
+              <td className="px-3 py-2 text-right text-dust font-mono">{r.compression_ratio ? `${r.compression_ratio}×` : '—'}</td>
+              <td className="px-3 py-2 text-right font-mono" style={{ color: r.named_rate >= 1 ? '#10b981' : '#f97316' }}>{r.named_rate != null ? pct(r.named_rate) : '—'}</td>
+              <td className="px-3 py-2 text-right font-mono" style={{ color: r.anomaly_rate >= 0.2 ? '#ef4444' : '#94a3b8' }}>{r.anomaly_rate != null ? pct(r.anomaly_rate, 1) : '—'}</td>
+              <td className="px-3 py-2 text-right text-dust font-mono">{r.recovery_rate != null ? pct(r.recovery_rate, 1) : '—'}</td>
+              <td className="px-3 py-2 text-right text-dust font-mono">{r.medoid_weak_rate != null ? pct(r.medoid_weak_rate, 1) : '—'}</td>
+              <td className="px-3 py-2 text-right text-dust font-mono truncate max-w-[130px]">{r.run_id || '—'}</td>
+              <td className="px-3 py-2 text-right"><StatusPill status={r.status} /></td>
+            </tr>
           ))}
-        </div>
-        <span className="rr-score" style={{ color: sc }}>{Math.round(item.priority_score * 100)}%</span>
-      </div>
+        </tbody>
+      </table>
+      {!rows.length && <div className="p-4 text-[11px] text-dust">No field health matrix data returned.</div>}
     </div>
   )
 }
 
-// ── Compression by Field panel ────────────────────────────────────────────────
-function CompressionPanel({ compression }) {
-  if (!compression?.by_field?.length) return null
-  const max = Math.max(...compression.by_field.map(f => f.label_count || 0), 1)
-  return (
-    <div className="intel-panel">
-      <div className="intel-panel-head">
-        <span className="intel-panel-title"><Layers size={12} /> Compression by Field</span>
-        <span className="intel-panel-badge">{compression.by_field.length} fields</span>
-      </div>
-      <div className="intel-panel-body">
-        {compression.by_field.map(f => {
-          const fc = getFieldColor(f.field_name)
-          const pctW = max > 0 ? Math.max(3, (f.label_count / max) * 100) : 3
-          return (
-            <div key={f.field_name} className="intel-field-row">
-              <span className="intel-field-name" style={{ color: fc }}>{f.field_name}</span>
-              <div className="intel-bar-track">
-                <div className="intel-bar-fill" style={{ width: `${pctW}%`, background: fc + '88' }} />
-              </div>
-              <span className="intel-field-val">
-                {f.compression_ratio != null ? `${f.compression_ratio}×` : fmt(f.cluster_count)}
-              </span>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-// ── Recovery Intelligence panel ───────────────────────────────────────────────
-function RecoveryPanel({ recovery }) {
-  if (!recovery) {
-    return (
-      <div className="intel-panel">
-        <div className="intel-panel-head">
-          <span className="intel-panel-title"><GitMerge size={12} /> Recovery Intelligence</span>
-        </div>
-        <div className="intel-empty">Loading…</div>
-      </div>
-    )
-  }
-
-  if (!recovery.has_recovery) {
-    return (
-      <div className="intel-panel">
-        <div className="intel-panel-head">
-          <span className="intel-panel-title"><GitMerge size={12} /> Recovery Intelligence</span>
-        </div>
-        <div className="intel-empty">No label recovery data found (base_cluster_id not tracked).</div>
-      </div>
-    )
-  }
-
-  const rescuePct = Math.round(recovery.rescue_rate * 100)
-  const maxRescue = Math.max(...(recovery.by_field || []).map(f => f.recovered_labels || 0), 1)
-
-  return (
-    <div className="intel-panel">
-      <div className="intel-panel-head">
-        <span className="intel-panel-title"><GitMerge size={12} /> Recovery Intelligence</span>
-        <span className="intel-panel-badge">{rescuePct}% rescue rate</span>
-      </div>
-      <div className="intel-stat-row">
-        <div>
-          <div className="intel-stat-num" style={{ color: '#4ec994' }}>{fmt(recovery.recovered_labels)}</div>
-          <div className="intel-stat-text">
-            <span className="intel-stat-label">labels rescued</span>
-            <span className="intel-stat-sub">re-routed to a better cluster</span>
-          </div>
-        </div>
-        <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#8a8a96' }}>
-            {fmt(recovery.total_labels - recovery.recovered_labels)}
-          </div>
-          <span className="intel-stat-sub">stayed in original</span>
-        </div>
-      </div>
-      <div className="intel-panel-body">
-        {(recovery.by_field || []).slice(0, 6).map(f => {
-          const fc = getFieldColor(f.field_name)
-          const pw = maxRescue > 0 ? Math.max(3, (f.recovered_labels / maxRescue) * 100) : 3
-          return (
-            <div key={f.field_name} className="intel-field-row">
-              <span className="intel-field-name" style={{ color: fc }}>{f.field_name}</span>
-              <div className="intel-bar-track">
-                <div className="intel-bar-fill" style={{ width: `${pw}%`, background: '#4ec99488' }} />
-              </div>
-              <span className="intel-field-val">{fmt(f.recovered_labels)}</span>
-            </div>
-          )
-        })}
-        {!recovery.by_field?.length && (
-          <div className="intel-empty">No per-field breakdown available.</div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ── Medoid Intelligence panel ─────────────────────────────────────────────────
-function MedoidPanel({ medoid, onOpenCluster }) {
-  if (!medoid) return null
-  if (!medoid.has_medoids) {
-    return (
-      <div className="intel-panel">
-        <div className="intel-panel-head">
-          <span className="intel-panel-title"><Cpu size={12} /> Medoid Intelligence</span>
-        </div>
-        <div className="intel-empty">No medoid_label column found.</div>
-      </div>
-    )
-  }
-
-  const covPct = Math.round(medoid.coverage_rate * 100)
-
-  return (
-    <div className="intel-panel">
-      <div className="intel-panel-head">
-        <span className="intel-panel-title"><Cpu size={12} /> Medoid Intelligence</span>
-        <span className="intel-panel-badge">{covPct}% coverage</span>
-      </div>
-      {medoid.weak?.length > 0 && (
-        <>
-          <div style={{ padding: '8px 16px 4px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-3)' }}>
-            Weak medoids
-          </div>
-          {medoid.weak.slice(0, 4).map((c, i) => {
-            const fc = getFieldColor(c.field_name)
-            return (
-              <div key={i} className="intel-item-row" style={{ cursor: 'pointer' }} onClick={() => onOpenCluster(c.id)}>
-                <span className="intel-item-field" style={{ color: fc }}>{c.field_name}</span>
-                <span className="intel-item-label" style={{ color: 'var(--yellow)', fontStyle: 'italic' }}>
-                  "{c.medoid_label}"
-                </span>
-                {c.cluster_size != null && <span className="intel-item-size">{fmt(c.cluster_size)}</span>}
-              </div>
-            )
-          })}
-        </>
-      )}
-      {medoid.strong?.length > 0 && (
-        <>
-          <div style={{ padding: '8px 16px 4px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-3)' }}>
-            Strong medoids
-          </div>
-          {medoid.strong.slice(0, 3).map((c, i) => {
-            const fc = getFieldColor(c.field_name)
-            return (
-              <div key={i} className="intel-item-row" style={{ cursor: 'pointer' }} onClick={() => onOpenCluster(c.id)}>
-                <span className="intel-item-field" style={{ color: fc }}>{c.field_name}</span>
-                <span className="intel-item-label">{c.medoid_label}</span>
-                {c.cluster_size != null && <span className="intel-item-size">{fmt(c.cluster_size)}</span>}
-              </div>
-            )
-          })}
-        </>
-      )}
-    </div>
-  )
-}
-
-// ── Main Page ─────────────────────────────────────────────────────────────────
 export default function OverviewPage() {
-  const { health, refreshAll, setSelectedClusterId, navigate } = useAppCtx()
-  const [fieldDist,    setFieldDist]   = useState(null)
-  const [sizeDist,     setSizeDist]    = useState(null)
-  const [topClusters,  setTop]         = useState([])
-  const [insights,     setInsights]    = useState(null)
-  const [priorities,   setPriorities]  = useState(null)
-  const [compression,  setCompression] = useState(null)
-  const [recovery,     setRecovery]    = useState(null)
-  const [medoid,       setMedoid]      = useState(null)
-  const [refreshing,   setRefreshing]  = useState(false)
+  const { health, setSelectedClusterId } = useAppCtx()
+  const [data, setData] = useState({})
+  const [loading, setLoading] = useState(true)
 
-  useEffect(() => { fetchPageData() }, [])
-
-  async function fetchPageData() {
-    const [fd, sd, tc, ins, pri, comp, rec, med] = await Promise.allSettled([
-      fetch('/api/field-distribution').then(r => r.json()),
-      fetch('/api/cluster-size-distribution').then(r => r.json()),
-      fetch('/api/clusters?limit=15').then(r => r.json()),
-      fetch('/api/insights').then(r => r.json()),
-      fetch('/api/review-priorities').then(r => r.json()),
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    Promise.allSettled([
       fetch('/api/semantic-compression').then(r => r.json()),
-      fetch('/api/recovery-intelligence').then(r => r.json()),
+      fetch('/api/anomaly-intelligence').then(r => r.json()),
       fetch('/api/medoid-intelligence').then(r => r.json()),
-    ])
-    if (fd.status  === 'fulfilled') setFieldDist(Array.isArray(fd.value) ? fd.value : [])
-    if (sd.status  === 'fulfilled') setSizeDist(Array.isArray(sd.value) ? sd.value : [])
-    if (tc.status  === 'fulfilled' && Array.isArray(tc.value))
-      setTop([...tc.value].sort((a, b) => (b.cluster_size || 0) - (a.cluster_size || 0)))
-    if (ins.status === 'fulfilled' && Array.isArray(ins.value)) setInsights(ins.value)
-    else setInsights([])
-    if (pri.status === 'fulfilled' && Array.isArray(pri.value)) setPriorities(pri.value)
-    else setPriorities([])
-    if (comp.status === 'fulfilled' && comp.value?.total_clusters != null) setCompression(comp.value)
-    if (rec.status  === 'fulfilled') setRecovery(rec.value)
-    if (med.status  === 'fulfilled') setMedoid(med.value)
-  }
+      fetch('/api/field-health').then(r => r.json()),
+      fetch('/api/duplicate-name-intelligence').then(r => r.json()),
+      fetch('/api/recovery-intelligence').then(r => r.json()),
+      fetch('/api/drift-summary').then(r => r.json()),
+      fetch('/api/run-metadata').then(r => r.ok ? r.json() : r.json().catch(() => ({ runs: [], table_exists: null, _status: r.status }))),
+      fetch('/api/review-priorities').then(r => r.json()),
+    ]).then(([compression, anomalies, medoid, fieldHealth, duplicates, recovery, drift, runMetadata, priorities]) => {
+      if (cancelled) return
+      setData({
+        compression: compression.status === 'fulfilled' ? compression.value : null,
+        anomalies: anomalies.status === 'fulfilled' ? anomalies.value : null,
+        medoid: medoid.status === 'fulfilled' ? medoid.value : null,
+        fieldHealth: fieldHealth.status === 'fulfilled' ? fieldHealth.value : [],
+        duplicates: duplicates.status === 'fulfilled' ? duplicates.value : null,
+        recovery: recovery.status === 'fulfilled' ? recovery.value : null,
+        drift: drift.status === 'fulfilled' ? drift.value : null,
+        runMetadata: runMetadata.status === 'fulfilled' ? runMetadata.value : { runs: [], table_exists: null, _unreachable: true },
+        priorities: priorities.status === 'fulfilled' ? priorities.value : [],
+      })
+    }).finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
 
-  async function handleRefresh() {
-    setRefreshing(true)
-    await Promise.allSettled([refreshAll(), fetchPageData()])
-    setRefreshing(false)
-  }
+  const fields = safeArray(data.compression?.by_field)
+  const fieldHealth = safeArray(data.fieldHealth)
+  const anomalyByField = safeArray(data.anomalies?.summary?.by_field)
+  const priorities = safeArray(data.priorities)
+  const runRows = safeArray(data.runMetadata?.runs)
+  const medoidByField = safeArray(data.medoid?.by_field)
+  const recoveryByField = safeArray(data.recovery?.by_field)
 
-  function handleInsightAction(insight) {
-    if (insight.action?.type === 'filter_field') navigate('clusters')
-    else if (insight.action?.type === 'page') navigate(insight.action.page)
-    else if (insight.examples?.[0]?.id) setSelectedClusterId(insight.examples[0].id)
-  }
+  const rawLabels = n(data.compression?.raw_label_count || health?.total_label_rows)
+  const clusters = n(data.compression?.total_clusters || health?.total_clusters)
+  const named = n(health?.named_clusters)
+  const anomalyClusters = n(data.anomalies?.summary?.total || health?.anomaly_clusters)
+  const anomalyLabels = n(data.anomalies?.summary?.anomaly_labels)
+  const anomalyOccurrences = n(data.anomalies?.summary?.anomaly_occurrences)
+  const compressionRatio = data.compression?.compression_ratio || (rawLabels && clusters ? +(rawLabels / clusters).toFixed(1) : null)
+  const reduction = rawLabels && clusters ? 1 - (clusters / rawLabels) : null
+  const namedRate = clusters ? named / clusters : null
+  const medoidCoverage = data.medoid?.coverage_rate ?? null
+  const centroidMissing = health?.centroid_missing_count
+  const centroidCoverage = clusters && centroidMissing != null ? 1 - (centroidMissing / clusters) : null
+  const anomalyRate = clusters ? anomalyClusters / clusters : null
+  const sameFieldDupes = n(data.duplicates?.same_field_duplicate_groups)
+  const crossFieldDupes = n(data.duplicates?.cross_field_duplicate_groups)
+  const totalCoveredLabels = n(health?.total_label_rows || data.compression?.total_items)
+
+  const maxFieldLabels = Math.max(...fields.map(f => n(f.label_count)), 1)
+  const maxAnomaly = Math.max(...anomalyByField.map(f => n(f.anomaly_clusters || f.true_anomaly_count)), 1)
+
+  const fieldMatrix = useMemo(() => {
+    const map = new Map()
+    const ensure = (field) => {
+      if (!field) return null
+      if (!map.has(field)) map.set(field, { field_name: field })
+      return map.get(field)
+    }
+
+    for (const f of fields) {
+      const row = ensure(f.field_name)
+      if (!row) continue
+      row.raw_labels = n(f.label_count)
+      row.clusters = n(f.cluster_count)
+      row.compression_ratio = f.compression_ratio
+      row.avg_size = f.avg_size
+    }
+    for (const f of fieldHealth) {
+      const row = ensure(f.field_name)
+      if (!row) continue
+      row.clusters = n(f.total_clusters, row.clusters)
+      row.named_clusters = n(f.named_clusters)
+      row.unnamed_clusters = n(f.unnamed_clusters)
+      row.named_rate = f.naming_rate != null ? Number(f.naming_rate) : rate(f.named_clusters, f.total_clusters)
+      row.field_anomaly_clusters = n(f.anomaly_clusters)
+      row.field_anomaly_rate = f.anomaly_rate != null ? Number(f.anomaly_rate) : rate(f.anomaly_clusters, f.total_clusters)
+      row.max_cluster_size = f.max_cluster_size
+    }
+    for (const f of anomalyByField) {
+      const row = ensure(f.field_name)
+      if (!row) continue
+      row.anomaly_clusters = n(f.anomaly_clusters || f.true_anomaly_count)
+      row.anomaly_rate = f.anomaly_rate != null ? Number(f.anomaly_rate) : row.field_anomaly_rate
+    }
+    for (const f of medoidByField) {
+      const row = ensure(f.field_name)
+      if (!row) continue
+      row.medoid_weak_rate = f.weak_rate != null ? Number(f.weak_rate) : rate(f.weak, f.total)
+    }
+    for (const f of recoveryByField) {
+      const row = ensure(f.field_name)
+      if (!row) continue
+      row.recovery_rate = f.rescue_rate != null ? Number(f.rescue_rate) : rate(f.recovered_labels, f.total_labels)
+      row.recovered_labels = n(f.recovered_labels)
+    }
+    for (const r of runRows) {
+      const row = ensure(r.field_name)
+      if (!row) continue
+      row.run_id = r.run_id
+      row.raw_labels = row.raw_labels || n(r.total_labels)
+      row.clusters = row.clusters || n(r.final_cluster_count)
+      row.run_anomaly_count = n(r.true_anomaly_count)
+      if (r.strict_recovery) {
+        row.recovery_rate = row.recovery_rate ?? (r.strict_recovery.label_recovery_rate != null ? Number(r.strict_recovery.label_recovery_rate) : null)
+      }
+    }
+
+    return [...map.values()].map(row => {
+      const ar = row.anomaly_rate ?? row.field_anomaly_rate ?? rate(row.anomaly_clusters ?? row.field_anomaly_clusters ?? row.run_anomaly_count, row.clusters)
+      const nr = row.named_rate
+      const mr = row.medoid_weak_rate
+      const reviewScore = (ar || 0) * 1.4 + (nr != null ? Math.max(0, 1 - nr) : 0) + (mr || 0) * 0.7
+      const status = reviewScore > 0.45 ? 'Review' : reviewScore > 0.18 ? 'Watch' : 'Healthy'
+      return {
+        ...row,
+        anomaly_rate: ar,
+        named_rate: nr,
+        medoid_weak_rate: mr,
+        status,
+      }
+    }).sort((a, b) => {
+      const order = { Review: 0, Watch: 1, Healthy: 2 }
+      return (order[a.status] - order[b.status]) || n(b.raw_labels) - n(a.raw_labels)
+    })
+  }, [fields, fieldHealth, anomalyByField, medoidByField, recoveryByField, runRows])
+
+  const strongestCompression = useMemo(() => {
+    return [...fields].filter(f => f.compression_ratio).sort((a, b) => n(b.compression_ratio) - n(a.compression_ratio))[0]
+  }, [fields])
+
+  const highestAnomaly = useMemo(() => {
+    return [...anomalyByField].sort((a, b) => n(b.anomaly_clusters || b.true_anomaly_count) - n(a.anomaly_clusters || a.true_anomaly_count))[0]
+  }, [anomalyByField])
+
+  const actionItems = useMemo(() => {
+    const items = []
+    if (centroidMissing > 0) {
+      items.push({ title: 'Centroid rebuild needed', severity: 'critical', metric: fmt(centroidMissing), detail: `${fmt(centroidMissing)} clusters are missing centroid coverage. Rebuild centroids before trusting semantic distance or medoid quality.` })
+    }
+    if (safeArray(data.medoid?.weak).length) {
+      items.push({ title: 'Weak medoid examples found', severity: 'warning', metric: fmt(safeArray(data.medoid?.weak).length), detail: 'Some representative labels look generic or too short. Review medoids before using them as cluster anchors.', target: 'quality' })
+    }
+    if (sameFieldDupes > 0) {
+      items.push({ title: 'Same-field duplicate names', severity: 'warning', metric: fmt(sameFieldDupes), detail: 'Duplicate display names exist inside the same field. These are naming or merge-review candidates.', target: 'merge' })
+    }
+    if (highestAnomaly) {
+      const count = n(highestAnomaly.anomaly_clusters || highestAnomaly.true_anomaly_count)
+      items.push({ title: `${highestAnomaly.field_name} anomaly pressure`, severity: count > 1000 ? 'critical' : 'warning', metric: fmt(count), detail: 'This field has the largest visible anomaly load. Review whether these are true unique cases or recoverable threshold failures.', target: 'anomalies' })
+    }
+    if (!data.drift?.has_computed_drift) {
+      items.push({ title: 'Drift comparison not active', severity: 'info', detail: 'The page is ready for drift, but true run-to-run centroid movement and label migration are not computed yet.', target: 'metadata' })
+    }
+    if (!items.length) {
+      items.push({ title: 'No urgent taxonomy blockers', severity: 'good', detail: 'Current health signals do not expose urgent missing coverage, duplicate-name, or weak-medoid issues.' })
+    }
+    return items.slice(0, 6)
+  }, [centroidMissing, data.medoid, data.drift, sameFieldDupes, highestAnomaly])
 
   function openCluster(id) {
-    navigate('clusters')
-    setSelectedClusterId(id)
+    if (id) setSelectedClusterId(id)
   }
 
-  const maxSize   = topClusters[0]?.cluster_size || 1
-  const criticals = insights?.filter(i => i.severity === 'critical').length || 0
-  const warnings  = insights?.filter(i => i.severity === 'warning').length  || 0
-
   return (
-    <div className="page-wrap">
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Semantic Intelligence</h1>
-          <p className="page-subtitle">Embedding observability — compression, recovery, and quality signals</p>
-        </div>
-        <div className="overview-header-right">
-          {criticals > 0 && (
-            <span className="alert-chip alert-chip--critical">
-              <AlertTriangle size={11} /> {criticals} critical
-            </span>
-          )}
-          {warnings > 0 && (
-            <span className="alert-chip alert-chip--warning">
-              <AlertTriangle size={11} /> {warnings} warnings
-            </span>
-          )}
-          <button
-            className={['btn-icon-text', refreshing && 'spinning'].filter(Boolean).join(' ')}
-            onClick={handleRefresh}
-          >
-            <RefreshCw size={13} />
-            Refresh
-          </button>
-        </div>
-      </div>
-
-      {/* Semantic compression hero */}
-      <SemanticHero health={health} compression={compression} medoid={medoid} />
-
-      {/* Insights panel */}
-      {insights !== null && (
-        <div className="section-block">
-          <div className="section-head">
-            <span className="section-head-title">
-              <Zap size={14} className="section-head-icon" />
-              Intelligence Insights
-            </span>
-            <span className="section-head-count">{insights.length} signals</span>
+    <div className="min-h-full px-6 py-5" style={{ background: '#02050a' }}>
+      <div className="max-w-[1540px] mx-auto">
+        <div className="flex items-start justify-between gap-4 mb-3">
+          <div>
+            <h1 className="text-[22px] font-bold text-star tracking-tight">Taxonomy Intelligence Center</h1>
+            <p className="text-[11px] text-dust mt-1 max-w-[820px]">
+              One operational page for deciding what to trust, what to review, and what to fix across compression, semantic quality, anomaly pressure, merge risk, coverage, and run metadata.
+            </p>
           </div>
-          {insights.length === 0 ? (
-            <div className="insights-empty">
-              <CheckCircle size={16} style={{ color: '#4ec994' }} />
-              <span>No issues detected — taxonomy looks healthy.</span>
+          {loading && <div className="text-[10px] uppercase tracking-[0.2em] text-dust">Loading signals…</div>}
+        </div>
+
+        <SectionNav />
+
+        <div className="space-y-5">
+          <Panel id="summary" title="Taxonomy Health Summary" subtitle="compact readout of the full clustering system" icon={Sparkles}>
+            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
+              <MetricCard label="Compression" value={compressionRatio ? `${compressionRatio}×` : '—'} color="#a855f7" icon={GitMerge} note={reduction != null ? `${fmt(rawLabels)} raw labels → ${fmt(clusters)} clusters. ${(reduction * 100).toFixed(1)}% reduction.` : 'Compression source data unavailable.'} onClick={() => scrollToSection('compression')} />
+              <MetricCard label="Semantic Quality" value={namedRate != null ? pct(namedRate) : '—'} color="#10b981" icon={ShieldCheck} note={`${fmt(named)} named clusters. Centroid coverage ${centroidCoverage != null ? pct(centroidCoverage) : 'not exposed'}.`} onClick={() => scrollToSection('quality')} />
+              <MetricCard label="Anomaly Pressure" value={fmt(anomalyClusters)} color="#ef4444" icon={AlertTriangle} note={`${anomalyRate != null ? pct(anomalyRate, 1) : '—'} of clusters. ${fmt(anomalyLabels)} anomaly labels, ${fmt(anomalyOccurrences)} occurrences.`} onClick={() => scrollToSection('anomalies')} />
+              <MetricCard label="Merge Risk" value={fmt(sameFieldDupes)} color="#06b6d4" icon={Target} note={`${fmt(sameFieldDupes)} same-field duplicate-name groups. ${fmt(crossFieldDupes)} cross-field overlaps are tracked separately.`} onClick={() => scrollToSection('merge')} />
+              <MetricCard label="Coverage" value={namedRate != null ? pct(namedRate) : '—'} color="#00d4ff" icon={Database} note={`${fmt(totalCoveredLabels)} label-map rows covered by active taxonomy surfaces.`} onClick={() => scrollToSection('coverage')} />
             </div>
-          ) : (
-            <div className="insights-grid">
-              {insights.map(ins => (
-                <InsightCard key={ins.id} insight={ins} onAction={handleInsightAction} />
+          </Panel>
+
+          <Panel id="actions" title="Action Queue" subtitle="prioritized review work generated from the available signals" icon={Zap}>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-4">
+              {actionItems.map((item, i) => (
+                <ActionCard key={`${item.title}-${i}`} {...item} onClick={item.target ? () => scrollToSection(item.target) : undefined} />
               ))}
             </div>
-          )}
-        </div>
-      )}
 
-      {/* Intelligence panels row */}
-      <div className="charts-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
-        <CompressionPanel compression={compression} />
-        <RecoveryPanel recovery={recovery} />
-        <MedoidPanel medoid={medoid} onOpenCluster={openCluster} />
-      </div>
-
-      {/* Charts row */}
-      <div className="charts-grid" style={{ marginTop: 16 }}>
-        <div className="chart-card">
-          <div className="chart-card-title">Cluster Size Distribution</div>
-          <div className="chart-card-body">
-            {sizeDist ? <ClusterSizeHistogram data={sizeDist} /> : <div className="chart-skeleton" />}
-          </div>
-        </div>
-        <div className="chart-card">
-          <div className="chart-card-title">Clusters by Field</div>
-          <div className="chart-card-body">
-            {fieldDist ? <FieldDistributionChart data={fieldDist} /> : <div className="chart-skeleton" />}
-          </div>
-        </div>
-      </div>
-
-      {/* Bottom panels */}
-      <div className="overview-lower-grid" style={{ marginTop: 16 }}>
-        <div className="chart-card">
-          <div className="chart-card-title">Largest Clusters</div>
-          <div className="chart-card-body chart-card-body--list">
-            {topClusters.length === 0 && <div className="chart-empty">Loading…</div>}
-            {topClusters.slice(0, 12).map((c, i) => (
-              <TopClusterRow key={c.id || i} cluster={c} maxSize={maxSize} onClick={openCluster} />
-            ))}
-          </div>
-        </div>
-
-        <div className="chart-card">
-          <div className="chart-card-title">
-            <Activity size={12} style={{ marginRight: 6 }} />
-            Field Health
-          </div>
-          <div className="chart-card-body chart-card-body--list">
-            {compression === null && <div className="chart-skeleton" />}
-            {compression?.by_field?.map(f => {
-              const fc = getFieldColor(f.field_name)
-              const maxLC = Math.max(...(compression.by_field || []).map(x => x.label_count || 0), 1)
-              const barW = f.label_count ? Math.max(4, (f.label_count / maxLC) * 100) : 4
-              return (
-                <div key={f.field_name} className="fh-row">
-                  <span className="fh-dot" style={{ background: fc }} />
-                  <span className="fh-name">{f.field_name}</span>
-                  <div className="fh-bars">
-                    <div className="fh-bar-track" title={`${fmt(f.label_count || 0)} items`}>
-                      <div className="fh-bar-fill" style={{ width: `${barW}%`, background: fc + 'cc' }} />
-                    </div>
-                  </div>
-                  <span className="fh-count">{fmt(f.cluster_count)}</span>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <div>
+                <div className="text-[9px] uppercase tracking-[0.2em] text-dust mb-3 font-bold">Cluster-level review examples</div>
+                <div className="flex flex-col gap-2">
+                  {priorities.slice(0, 6).map(item => <ClusterRow key={item.id} item={item} onClick={openCluster} rightLabel={normalizeLabel((item.reasons || ['review'])[0])} />)}
+                  {!priorities.length && <div className="flex items-center gap-2 text-[11px] text-dust"><CheckCircle size={13} /> No cluster-level priority rows returned.</div>}
                 </div>
-              )
-            })}
-          </div>
-        </div>
-
-        <div className="chart-card chart-card--wide">
-          <div className="chart-card-title">
-            Top Review Priorities
-            <span className="chart-card-subtitle"> — clusters needing attention</span>
-          </div>
-          <div className="chart-card-body chart-card-body--list">
-            {priorities === null && <div className="chart-skeleton" />}
-            {priorities?.length === 0 && (
-              <div className="chart-empty">
-                <CheckCircle size={14} style={{ color: '#4ec994', marginRight: 6 }} />
-                No clusters flagged for review.
               </div>
-            )}
-            {priorities?.slice(0, 10).map(item => (
-              <ReviewRow key={item.id} item={item} onClick={id => openCluster(id)} />
-            ))}
-          </div>
+              <div className="rounded-xl p-4" style={{ background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(26,45,74,0.55)' }}>
+                <div className="text-[9px] uppercase tracking-[0.2em] text-dust mb-3 font-bold">How to read this page</div>
+                <p className="text-[11px] leading-relaxed" style={{ color: '#64748b' }}>
+                  This page is not another visualization tab. It is the control room for taxonomy quality: first check the Action Queue, then use the Field Health Matrix to decide which field needs cleanup, then inspect compression, anomalies, merge risk, and metadata only where needed.
+                </p>
+              </div>
+            </div>
+          </Panel>
+
+          <Panel id="matrix" title="Field Health Matrix" subtitle="one comparison table for every taxonomy field" icon={LineChart} compact>
+            <FieldHealthMatrix rows={fieldMatrix} />
+          </Panel>
+
+          <Panel id="compression" title="Compression Intelligence" subtitle="raw taxonomy language consolidated into semantic clusters" icon={GitMerge}>
+            <div className="grid grid-cols-1 lg:grid-cols-[0.9fr_1.4fr] gap-5">
+              <div className="rounded-xl p-4" style={{ background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(26,45,74,0.55)' }}>
+                <DataRow label="Raw labels" value={fmt(rawLabels)} />
+                <DataRow label="Final clusters" value={fmt(clusters)} />
+                <DataRow label="Compression ratio" value={compressionRatio ? `${compressionRatio}×` : '—'} color="#a855f7" chip />
+                <DataRow label="Reduction" value={reduction != null ? `${(reduction * 100).toFixed(1)}%` : '—'} color="#10b981" chip />
+                <DataRow label="Strongest field" value={strongestCompression ? `${strongestCompression.field_name} (${strongestCompression.compression_ratio}×)` : '—'} />
+              </div>
+              <div>
+                {fields.map(f => (
+                  <FieldBarRow
+                    key={f.field_name}
+                    field={f.field_name}
+                    left={`${fmt(f.label_count || 0)} labels`}
+                    right={f.compression_ratio ? `${f.compression_ratio}×` : '—'}
+                    percent={(n(f.label_count) / maxFieldLabels) * 100}
+                  />
+                ))}
+                {!fields.length && <div className="text-dust text-xs">No field-level compression data returned.</div>}
+              </div>
+            </div>
+          </Panel>
+
+          <Panel id="quality" title="Semantic Quality" subtitle="naming, centroid, medoid, and cleanup signals" icon={ShieldCheck}>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+              <div className="rounded-xl p-4" style={{ background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(26,45,74,0.55)' }}>
+                <Progress label="Named clusters" value={namedRate || 0} color="#10b981" right={namedRate != null ? pct(namedRate) : '—'} />
+                <Progress label="Centroid coverage" value={centroidCoverage || 0} color="#00d4ff" right={centroidCoverage != null ? pct(centroidCoverage) : '—'} />
+                <Progress label="Medoid coverage" value={medoidCoverage || 0} color="#f97316" right={medoidCoverage != null ? pct(medoidCoverage) : '—'} />
+                <DataRow label="Centroids missing" value={centroidMissing ?? 'not exposed'} />
+                <DataRow label="Weak medoid examples" value={safeArray(data.medoid?.weak).length} />
+              </div>
+              <div className="lg:col-span-2 grid grid-cols-1 xl:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-[9px] uppercase tracking-[0.2em] text-dust mb-3 font-bold">Weak medoid examples</div>
+                  <div className="flex flex-col gap-2">
+                    {safeArray(data.medoid?.weak).slice(0, 8).map(item => <ClusterRow key={item.id} item={item} onClick={openCluster} rightLabel="weak medoid" />)}
+                    {!safeArray(data.medoid?.weak).length && <div className="flex items-center gap-2 text-[11px] text-dust"><CheckCircle size={13} /> No weak medoid examples returned.</div>}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] uppercase tracking-[0.2em] text-dust mb-3 font-bold">Medoid risk by field</div>
+                  <div className="flex flex-col gap-1">
+                    {medoidByField.slice(0, 8).map(f => <FieldBarRow key={f.field_name} field={f.field_name} left={`${fmt(f.weak)} weak`} right={f.weak_rate != null ? pct(f.weak_rate, 1) : '—'} percent={n(f.weak_rate) * 100} color="#f97316" />)}
+                    {!medoidByField.length && <div className="text-[11px] text-dust">No medoid-by-field data returned.</div>}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Panel>
+
+          <Panel id="anomalies" title="Anomaly Intelligence" subtitle="true anomaly pressure and strict graph recovery signals" icon={AlertTriangle}>
+            <div className="grid grid-cols-1 lg:grid-cols-[0.9fr_1.4fr] gap-5">
+              <div className="rounded-xl p-4" style={{ background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(26,45,74,0.55)' }}>
+                <DataRow label="Anomaly clusters" value={fmt(anomalyClusters)} color="#ef4444" chip />
+                <DataRow label="Anomaly labels" value={fmt(anomalyLabels)} />
+                <DataRow label="Anomaly occurrences" value={fmt(anomalyOccurrences)} />
+                <DataRow label="Highest anomaly field" value={highestAnomaly ? highestAnomaly.field_name : '—'} />
+                <DataRow label="Recovery available" value={data.recovery?.has_recovery ? 'Yes' : 'Metadata/API only'} color={data.recovery?.has_recovery ? '#10b981' : '#64748b'} chip />
+                {data.recovery?.has_recovery && <Progress label="Rescue rate" value={data.recovery.rescue_rate || 0} color="#a855f7" right={pct(data.recovery.rescue_rate || 0, 1)} />}
+                <p className="text-[10.5px] leading-relaxed mt-4" style={{ color: '#64748b' }}>
+                  Anomalies are labels not absorbed into stable semantic clusters. They can be true unique cases, unresolved drift, or recoverable threshold failures.
+                </p>
+              </div>
+              <div>
+                {anomalyByField.map(f => {
+                  const count = n(f.anomaly_clusters || f.true_anomaly_count)
+                  return <FieldBarRow key={f.field_name} field={f.field_name} left={`${fmt(count)} anomalies`} right={f.anomaly_rate != null ? pct(f.anomaly_rate, 1) : ''} percent={(count / maxAnomaly) * 100} color="#ef4444" />
+                })}
+                {!anomalyByField.length && <div className="text-dust text-xs">No anomaly-by-field breakdown returned.</div>}
+              </div>
+            </div>
+          </Panel>
+
+          <Panel id="merge" title="Merge Intelligence" subtitle="duplicate-name and merge-risk signals without cross-field false positives" icon={Target}>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <div>
+                <div className="text-[9px] uppercase tracking-[0.2em] text-dust mb-3 font-bold">Same-field duplicate risk</div>
+                <div className="flex flex-col gap-2">
+                  {safeArray(data.duplicates?.same_field_examples).slice(0, 10).map((d, i) => (
+                    <div key={`${d.field_name}-${d.display_name}-${i}`} className="rounded-xl px-3 py-2" style={{ background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(26,45,74,0.45)' }}>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] text-star truncate">{d.display_name}</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-md" style={{ color: '#06b6d4', background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.22)' }}>{d.cluster_count} clusters</span>
+                      </div>
+                      <div className="text-[9.5px] mt-1" style={{ color: getFieldColor(d.field_name) }}>{d.field_name}</div>
+                    </div>
+                  ))}
+                  {!safeArray(data.duplicates?.same_field_examples).length && <div className="text-[11px] text-dust">No same-field duplicate groups returned.</div>}
+                </div>
+              </div>
+              <div>
+                <div className="text-[9px] uppercase tracking-[0.2em] text-dust mb-3 font-bold">Cross-field naming overlap</div>
+                <div className="flex flex-col gap-2">
+                  {safeArray(data.duplicates?.cross_field_examples).slice(0, 10).map((d, i) => (
+                    <div key={`${d.display_name}-${i}`} className="rounded-xl px-3 py-2" style={{ background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(26,45,74,0.45)' }}>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] text-star truncate">{d.display_name}</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-md" style={{ color: '#64748b', background: 'rgba(100,116,139,0.12)', border: '1px solid rgba(100,116,139,0.22)' }}>not auto-merge</span>
+                      </div>
+                      <div className="text-[9.5px] mt-1 text-dust truncate">{safeArray(d.fields).join(', ')}</div>
+                    </div>
+                  ))}
+                  {!safeArray(data.duplicates?.cross_field_examples).length && <div className="text-[11px] text-dust">No cross-field overlaps returned.</div>}
+                </div>
+              </div>
+            </div>
+          </Panel>
+
+          <Panel id="coverage" title="Coverage Intelligence" subtitle="active taxonomy coverage and field health" icon={Database}>
+            <div className="grid grid-cols-1 lg:grid-cols-[0.8fr_1.5fr] gap-5">
+              <div className="rounded-xl p-4" style={{ background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(26,45,74,0.55)' }}>
+                <DataRow label="Total clusters" value={fmt(clusters)} />
+                <DataRow label="Named clusters" value={fmt(named)} />
+                <DataRow label="Unnamed clusters" value={fmt(health?.unnamed_clusters || 0)} />
+                <DataRow label="Label-map rows" value={fmt(totalCoveredLabels)} />
+                <DataRow label="Fields" value={health?.fields_count || fieldHealth.length || '—'} />
+                <DataRow label="Run records" value={health?.last_run_count ?? runRows.length ?? '—'} />
+              </div>
+              <div>
+                {fieldHealth.map(f => (
+                  <FieldBarRow
+                    key={f.field_name}
+                    field={f.field_name}
+                    left={`${fmt(f.total_clusters)} clusters`}
+                    right={f.naming_rate != null ? pct(f.naming_rate) : '—'}
+                    percent={(n(f.named_clusters) / Math.max(1, n(f.total_clusters))) * 100}
+                  />
+                ))}
+                {!fieldHealth.length && <div className="text-dust text-xs">No field health rows returned.</div>}
+              </div>
+            </div>
+          </Panel>
+
+          <Panel id="metadata" title="Run Metadata" subtitle="model, clustering config, graph recovery, and drift readiness" icon={Layers}>
+            <div className="grid grid-cols-1 xl:grid-cols-[1fr_1fr] gap-5">
+              <div>
+                <div className="text-[9px] uppercase tracking-[0.2em] text-dust mb-3 font-bold">Current runs by field</div>
+                <div className="overflow-hidden rounded-xl" style={{ border: '1px solid rgba(26,45,74,0.55)' }}>
+                  <table className="w-full text-left text-[10.5px]">
+                    <thead style={{ background: 'rgba(255,255,255,0.025)', color: '#64748b' }}>
+                      <tr>
+                        <th className="px-3 py-2 font-semibold">Field</th>
+                        <th className="px-3 py-2 font-semibold">Run</th>
+                        <th className="px-3 py-2 font-semibold">Model</th>
+                        <th className="px-3 py-2 font-semibold">Device</th>
+                        <th className="px-3 py-2 font-semibold">k / θ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {runRows.slice(0, 12).map((r, i) => (
+                        <tr key={`${r.field_name}-${r.run_id}-${i}`} style={{ borderTop: '1px solid rgba(26,45,74,0.35)' }}>
+                          <td className="px-3 py-2 truncate" style={{ color: getFieldColor(r.field_name) }}>{r.field_name}</td>
+                          <td className="px-3 py-2 text-dust font-mono">{r.run_id}</td>
+                          <td className="px-3 py-2 text-dust truncate max-w-[220px]">{r.model_name || '—'}</td>
+                          <td className="px-3 py-2 text-dust">{r.embedding_device || '—'}</td>
+                          <td className="px-3 py-2 text-dust font-mono">{r.graph_k_values || r.strict_recovery?.k_neighbors || '—'} / {r.graph_threshold_values || r.strict_recovery?.similarity_threshold || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {!runRows.length && (
+                    <div className="p-4 text-[11px] text-dust">
+                      {data.runMetadata?.table_exists === false
+                        ? 'Table taxonomy_run_metadata does not exist — run the pipeline to populate it.'
+                        : data.runMetadata?.table_exists === true
+                          ? 'taxonomy_run_metadata table exists but has no rows yet.'
+                          : data.runMetadata?._unreachable
+                            ? 'Run metadata unavailable — API server not responding on port 5050.'
+                            : data.runMetadata?._status
+                              ? `API error ${data.runMetadata._status} — check the server logs.`
+                              : 'Run metadata unavailable.'}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="text-[9px] uppercase tracking-[0.2em] text-dust mb-3 font-bold">Drift readiness</div>
+                <div className="rounded-xl p-4" style={{ background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(26,45,74,0.55)' }}>
+                  <DataRow label="Drift status" value={data.drift?.has_computed_drift ? 'Computed' : 'Not computed yet'} color={data.drift?.has_computed_drift ? '#10b981' : '#f97316'} chip />
+                  <DataRow label="Latest run metadata rows" value={fmt(runRows.length)} />
+                  <DataRow label="Fields ready for comparison" value={fmt(data.runMetadata?.fields_with_runs || 0)} />
+                  <DataRow label="Newest cluster examples" value={fmt(safeArray(data.drift?.newest_clusters).length)} />
+                  <p className="text-[11px] leading-relaxed mt-4" style={{ color: '#64748b' }}>
+                    Drift stays inside this Intelligence page. Until true run-to-run centroid movement, label migration, and cluster birth/death are computed, this area shows readiness and metadata instead of pretending drift exists.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </Panel>
         </div>
       </div>
     </div>
