@@ -247,7 +247,7 @@ export default function OverviewPage() {
       fetch('/api/duplicate-name-intelligence').then(r => r.json()),
       fetch('/api/recovery-intelligence').then(r => r.json()),
       fetch('/api/drift-summary').then(r => r.json()),
-      fetch('/api/run-metadata').then(r => r.json()),
+      fetch('/api/run-metadata').then(r => r.ok ? r.json() : r.json().catch(() => ({ runs: [], table_exists: null, _status: r.status }))),
       fetch('/api/review-priorities').then(r => r.json()),
     ]).then(([compression, anomalies, medoid, fieldHealth, duplicates, recovery, drift, runMetadata, priorities]) => {
       if (cancelled) return
@@ -259,7 +259,7 @@ export default function OverviewPage() {
         duplicates: duplicates.status === 'fulfilled' ? duplicates.value : null,
         recovery: recovery.status === 'fulfilled' ? recovery.value : null,
         drift: drift.status === 'fulfilled' ? drift.value : null,
-        runMetadata: runMetadata.status === 'fulfilled' ? runMetadata.value : null,
+        runMetadata: runMetadata.status === 'fulfilled' ? runMetadata.value : { runs: [], table_exists: null, _unreachable: true },
         priorities: priorities.status === 'fulfilled' ? priorities.value : [],
       })
     }).finally(() => { if (!cancelled) setLoading(false) })
@@ -624,10 +624,14 @@ export default function OverviewPage() {
                   {!runRows.length && (
                     <div className="p-4 text-[11px] text-dust">
                       {data.runMetadata?.table_exists === false
-                        ? 'Table taxonomy_run_metadata does not exist. Run the pipeline to generate run metadata.'
+                        ? 'Table taxonomy_run_metadata does not exist — run the pipeline to populate it.'
                         : data.runMetadata?.table_exists === true
-                          ? 'taxonomy_run_metadata table exists but contains no rows yet.'
-                          : 'Run metadata unavailable — server may be unreachable.'}
+                          ? 'taxonomy_run_metadata table exists but has no rows yet.'
+                          : data.runMetadata?._unreachable
+                            ? 'Run metadata unavailable — API server not responding on port 5050.'
+                            : data.runMetadata?._status
+                              ? `API error ${data.runMetadata._status} — check the server logs.`
+                              : 'Run metadata unavailable.'}
                     </div>
                   )}
                 </div>
