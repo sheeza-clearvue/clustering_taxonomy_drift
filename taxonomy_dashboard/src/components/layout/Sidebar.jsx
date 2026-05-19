@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import {
-  Orbit, LayoutDashboard, Database, AlertTriangle, GitBranch,
+  Orbit, LayoutDashboard, AlertTriangle, GitBranch,
   Search, Settings, Activity, Layers, ChevronRight,
 } from 'lucide-react'
 import useStore from '../../store/useStore.js'
@@ -16,7 +16,6 @@ const NAV = [
   {
     group: 'Explore',
     items: [
-      { id: 'clusters',    label: 'Cluster Explorer', sub: 'Browse & inspect', Icon: Database,    color: '#10b981' },
       { id: 'anomalies',   label: 'Anomalies',        sub: 'Outlier analysis', Icon: AlertTriangle, color: '#ef4444' },
       { id: 'drift',       label: 'Drift Monitor',    sub: 'Pattern changes',  Icon: GitBranch,   color: '#f97316' },
     ],

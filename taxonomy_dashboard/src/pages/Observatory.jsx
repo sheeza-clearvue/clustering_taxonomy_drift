@@ -1,7 +1,8 @@
 import { useEffect, useState, lazy, Suspense } from 'react'
-import { RotateCcw, Map, Orbit, Search, SlidersHorizontal, Minus, Plus, Maximize2 } from 'lucide-react'
+import { RotateCcw, Map, Orbit, Search, SlidersHorizontal, Minus, Plus, Maximize2, Table2, Columns, LayoutDashboard, AlertTriangle, GitBranch } from 'lucide-react'
 import useStore from '../store/useStore.js'
 import RightInspector from '../components/layout/RightInspector.jsx'
+import ClusterTable from '../components/ClusterTable.jsx'
 import { getFieldColor } from '../components/scene/sceneUtils.js'
 
 const SemanticScene = lazy(() => import('../components/scene/SemanticScene.jsx'))
@@ -190,6 +191,7 @@ export default function Observatory() {
     colorMode, setColorMode,
     anomalyFilter, setAnomalyFilter,
     triggerCameraReset,
+    navigate,
     health,
   } = useStore()
 
@@ -292,6 +294,10 @@ export default function Observatory() {
     if (next.length === 1) setActiveField(next[0])
   }
 
+  const isTableView = viewMode === 'table'
+  const isSplitView = viewMode === 'split'
+  const sceneProjection = viewMode === '3d' ? '3d' : 'map'
+
   return (
     <div className="flex flex-col w-full h-full overflow-hidden" style={{ background: '#02050a' }}>
 
@@ -307,14 +313,11 @@ export default function Observatory() {
             scrollbarWidth: 'thin', scrollbarColor: '#1a2d4a transparent',
           }}>
 
-          {/* Live indicator */}
-          <div className="flex-shrink-0 pb-1" style={{ borderBottom: '1px solid rgba(26,45,74,0.5)' }}>
-            <div className="text-[8.5px] uppercase tracking-[0.25em] font-bold" style={{ color: '#00d4ff', textShadow: '0 0 10px rgba(0,212,255,0.35)' }}>
-              Semantic Map
-            </div>
-            <div className="flex items-center gap-1.5 mt-1.5">
+          {/* Active sample indicator */}
+          <div className="flex-shrink-0 pb-2" style={{ borderBottom: '1px solid rgba(26,45,74,0.5)' }}>
+            <div className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 animate-pulse" style={{ background: '#10b981', boxShadow: '0 0 5px #10b981' }} />
-              <span className="text-[9px]" style={{ color: '#1e3450' }}>
+              <span className="text-[9px]" style={{ color: '#64748b' }}>
                 {displayClusters.length.toLocaleString()}
                 {clusters.length !== displayClusters.length && ` / ${clusters.length.toLocaleString()}`} nodes
               </span>
@@ -324,7 +327,7 @@ export default function Observatory() {
           {/* View */}
           <CtrlSection label="View">
             <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid rgba(26,45,74,0.65)' }}>
-              {[['map', Map, 'Map'], ['3d', Orbit, '3D']].map(([mode, Icon, lbl]) => (
+              {[['map', Map, 'Map'], ['3d', Orbit, '3D'], ['table', Table2, 'Table'], ['split', Columns, 'Split']].map(([mode, Icon, lbl]) => (
                 <button key={mode} onClick={() => setViewMode(mode)}
                   className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[9px] font-semibold transition-all duration-150"
                   style={viewMode === mode
@@ -419,28 +422,56 @@ export default function Observatory() {
             </div>
           </CtrlSection>
 
-          {/* Reset view */}
-          <button onClick={resetScene}
-            className="flex items-center justify-center gap-1.5 rounded-lg py-2 text-[9.5px] transition-all duration-150 mt-auto flex-shrink-0"
-            style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(26,45,74,0.6)', color: '#475569' }}
-            onMouseEnter={e => { e.currentTarget.style.color = '#00d4ff'; e.currentTarget.style.borderColor = 'rgba(0,212,255,0.3)' }}
-            onMouseLeave={e => { e.currentTarget.style.color = '#475569'; e.currentTarget.style.borderColor = 'rgba(26,45,74,0.6)' }}>
-            <RotateCcw size={11} /> Reset View
-          </button>
+          <div className="mt-auto flex-shrink-0 flex flex-col gap-2 pt-2" style={{ borderTop: '1px solid rgba(26,45,74,0.45)' }}>
+            <button onClick={resetScene}
+              className="flex items-center justify-center gap-1.5 rounded-lg py-2 text-[9.5px] transition-all duration-150"
+              style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(26,45,74,0.6)', color: '#64748b' }}
+              onMouseEnter={e => { e.currentTarget.style.color = '#00d4ff'; e.currentTarget.style.borderColor = 'rgba(0,212,255,0.3)' }}
+              onMouseLeave={e => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = 'rgba(26,45,74,0.6)' }}>
+              <RotateCcw size={11} /> Reset View
+            </button>
+
+            <div className="grid grid-cols-3 gap-1.5">
+              {[
+                ['overview', LayoutDashboard, 'Intel', '#a855f7'],
+                ['anomalies', AlertTriangle, 'Anom', '#ef4444'],
+                ['drift', GitBranch, 'Drift', '#f97316'],
+              ].map(([page, Icon, label, color]) => (
+                <button key={page} onClick={() => navigate(page)}
+                  className="flex flex-col items-center justify-center gap-1 rounded-lg py-2 text-[8.5px] font-semibold transition-all duration-150"
+                  style={{ background: `${color}10`, border: `1px solid ${color}26`, color }}>
+                  <Icon size={12} />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
-        {/* ── CENTER: SEMANTIC MAP ────────────────────────────────────────────── */}
+        {/* ── CENTER: OBSERVATORY WORKSPACE ───────────────────────────────────── */}
         <div className="relative flex-1 min-w-0 overflow-hidden">
-          <Suspense fallback={<SceneLoader label="Initializing Semantic Map…" />}>
-            {!loading
-              ? <SemanticScene clusters={displayClusters} colorMode={colorMode} viewMode={viewMode} showLabels={showLabels} />
-              : <SceneLoader label="Loading semantic map…" />
-            }
-          </Suspense>
+          {!isTableView && (
+            <div className={isSplitView ? 'h-[58%] min-h-[260px] relative overflow-hidden border-b border-obs-border/60' : 'absolute inset-0 overflow-hidden'}>
+              <Suspense fallback={<SceneLoader label="Initializing Semantic Map…" />}>
+                {!loading
+                  ? <SemanticScene clusters={displayClusters} colorMode={colorMode} viewMode={sceneProjection} showLabels={showLabels} />
+                  : <SceneLoader label="Loading semantic map…" />
+                }
+              </Suspense>
+            </div>
+          )}
+
+          {(isTableView || isSplitView) && (
+            <div className={isSplitView ? 'absolute left-0 right-0 bottom-0 h-[42%] min-h-[220px] overflow-hidden p-3' : 'absolute inset-0 overflow-hidden p-4 pt-16'}>
+              <div className="observatory-table-shell h-full overflow-hidden rounded-xl" style={{ background: 'rgba(3,8,15,0.78)', border: '1px solid rgba(26,45,74,0.72)' }}>
+                <ClusterTable clusters={displayClusters} loading={loading} error={null} />
+              </div>
+            </div>
+          )}
 
           {/* Top semantic-map toolbar */}
-          <div className="absolute top-3 left-4 right-4 z-10 flex items-center justify-between gap-3" style={{ pointerEvents: 'none' }}>
-            <div className="flex items-center gap-5 rounded-lg px-3 py-2"
+          <div className="absolute top-2.5 left-3 right-3 z-10 flex items-center justify-between gap-2" style={{ pointerEvents: 'none' }}>
+            {!isTableView && <div className="flex items-center gap-3 rounded-lg px-2.5 py-1.5"
               style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', backdropFilter: 'blur(14px)', boxShadow: '0 10px 30px rgba(0,0,0,0.28)' }}>
               {[
                 ['Cluster', '#e5e7eb', 'circle'],
@@ -448,23 +479,23 @@ export default function Observatory() {
                 ['Medoid', '#f97316', 'diamond'],
                 ['Anomaly', '#ec4899', 'dot'],
               ].map(([label, color, kind]) => (
-                <div key={label} className="flex items-center gap-1.5 text-[11px] text-star">
-                  {kind === 'diamond' ? <span className="w-2.5 h-2.5 rotate-45" style={{ border: `2px solid ${color}` }} />
-                    : kind === 'ring' ? <span className="w-3 h-3 rounded-full" style={{ border: `2px solid ${color}`, boxShadow: `0 0 8px ${color}77` }} />
-                    : kind === 'dot' ? <span className="w-3.5 h-3.5 rounded-full" style={{ background: color, boxShadow: `0 0 10px ${color}88` }} />
-                    : <span className="w-3.5 h-3.5 rounded-full" style={{ border: `2px solid ${color}` }} />}
+                <div key={label} className="flex items-center gap-1 text-[10px] text-star">
+                  {kind === 'diamond' ? <span className="w-2 h-2 rotate-45" style={{ border: `2px solid ${color}` }} />
+                    : kind === 'ring' ? <span className="w-2.5 h-2.5 rounded-full" style={{ border: `2px solid ${color}`, boxShadow: `0 0 8px ${color}77` }} />
+                    : kind === 'dot' ? <span className="w-3 h-3 rounded-full" style={{ background: color, boxShadow: `0 0 10px ${color}88` }} />
+                    : <span className="w-3 h-3 rounded-full" style={{ border: `2px solid ${color}` }} />}
                   <span>{label}</span>
                 </div>
               ))}
-            </div>
+            </div>}
 
             <div className="flex items-center gap-2" style={{ pointerEvents: 'auto' }}>
-              <div className="hidden md:flex items-center gap-2 rounded-lg px-3 py-2 w-[280px]"
+              <div className="hidden md:flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 w-[240px]"
                 style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', backdropFilter: 'blur(14px)' }}>
-                <Search size={14} style={{ color: '#94a3b8' }} />
+                <Search size={12} style={{ color: '#94a3b8' }} />
                 <input
                   placeholder="Search cluster or label..."
-                  className="w-full bg-transparent outline-none text-[11px] text-star placeholder:text-slate-500"
+                  className="w-full bg-transparent outline-none text-[10px] text-star placeholder:text-slate-500"
                   onKeyDown={e => {
                     if (e.key !== 'Enter') return
                     const q = e.currentTarget.value.trim().toLowerCase()
@@ -478,25 +509,25 @@ export default function Observatory() {
                   }}
                 />
               </div>
-              <button className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors"
+              <button className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
                 style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', color: '#94a3b8', backdropFilter: 'blur(14px)' }}>
-                <SlidersHorizontal size={14} />
+                <SlidersHorizontal size={12} />
               </button>
-              <button onClick={resetScene} className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors"
+              <button onClick={resetScene} className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
                 style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', color: '#94a3b8', backdropFilter: 'blur(14px)' }}>
-                <RotateCcw size={14} />
+                <RotateCcw size={12} />
               </button>
             </div>
           </div>
 
           {/* Bottom in-map controls */}
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center rounded-xl overflow-hidden"
+          {!isTableView && <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center rounded-xl overflow-hidden"
             style={{ background: 'rgba(3,8,15,0.84)', border: '1px solid rgba(71,85,105,0.42)', backdropFilter: 'blur(14px)', boxShadow: '0 10px 30px rgba(0,0,0,0.35)' }}>
             <button onClick={() => sendSceneCommand('zoomOut')} className="w-10 h-9 flex items-center justify-center text-slate-300 hover:text-cyan transition-colors"><Minus size={14} /></button>
             <div className="w-16 h-9 flex items-center justify-center text-[12px] text-star" style={{ borderLeft: '1px solid rgba(71,85,105,0.35)', borderRight: '1px solid rgba(71,85,105,0.35)' }}>100%</div>
             <button onClick={() => sendSceneCommand('zoomIn')} className="w-10 h-9 flex items-center justify-center text-slate-300 hover:text-cyan transition-colors"><Plus size={16} /></button>
             <button onClick={() => sendSceneCommand('fullscreen')} className="w-10 h-9 flex items-center justify-center text-slate-300 hover:text-cyan transition-colors" style={{ borderLeft: '1px solid rgba(71,85,105,0.35)' }}><Maximize2 size={15} /></button>
-          </div>
+          </div>}
         </div>
 
         {/* ── RIGHT INSPECTOR ───────────────────────────────────────────────── */}

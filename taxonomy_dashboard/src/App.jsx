@@ -7,7 +7,6 @@ import RightInspector from './components/layout/RightInspector.jsx'
 import GlobalSearch from './components/GlobalSearch.jsx'
 
 const Observatory    = lazy(() => import('./pages/Observatory.jsx'))
-const ClustersPage   = lazy(() => import('./pages/ClustersPage.jsx'))
 const AnomaliesPage  = lazy(() => import('./pages/AnomaliesPage.jsx'))
 const DriftPage      = lazy(() => import('./pages/DriftPage.jsx'))
 const OverviewPage   = lazy(() => import('./pages/OverviewPage.jsx'))
@@ -34,7 +33,7 @@ function AppShell() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-obs-void">
-      <Sidebar />
+      {!isObservatory && <Sidebar />}
 
       <div className="flex flex-col flex-1 overflow-hidden min-w-0">
         {!isObservatory && <TopBar />}
@@ -47,7 +46,6 @@ function AppShell() {
             <PageSuspense>
               {activePage === 'observatory' && <Observatory />}
               {activePage === 'overview'    && <OverviewPage />}
-              {activePage === 'clusters'    && <ClustersPage />}
               {activePage === 'anomalies'   && <AnomaliesPage />}
               {activePage === 'drift'       && <DriftPage />}
             </PageSuspense>
