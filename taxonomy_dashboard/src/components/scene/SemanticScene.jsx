@@ -508,6 +508,48 @@ export default function SemanticScene({ clusters, colorMode, viewMode, showLabel
     dirtyRef.current = true
   }, [cameraReset, is3d])
 
+  // Direct scene commands from the overlay controls. Keeps the toolbar buttons
+  // functional without coupling the canvas to the React overlay.
+  useEffect(() => {
+    function resetCurrentView() {
+      const { w, h } = is3dRef.current ? xf3d.current : xf2d.current
+      if (!w || !h) return
+      if (is3dRef.current) {
+        xf3d.current = { rotX: 0.28, rotY: -0.45, fov: 240, zoom: 4.2, panX: 0, panY: 0, w, h }
+      } else if (posRef.current.length) {
+        xf2d.current = { ...xf2d.current, ...fitAll(posRef.current, w, h) }
+      }
+      dirtyRef.current = true
+    }
+
+    function zoomCurrentView(direction) {
+      const factor = direction === 'in' ? 1.22 : 1 / 1.22
+      if (is3dRef.current) {
+        const nextZoom = clamp(xf3d.current.zoom * factor, 0.65, 38)
+        xf3d.current = { ...xf3d.current, zoom: nextZoom }
+      } else {
+        const nextScale = clamp(xf2d.current.sc * factor, 0.25, 260)
+        xf2d.current = { ...xf2d.current, sc: nextScale }
+      }
+      dirtyRef.current = true
+    }
+
+    function onSceneCommand(event) {
+      const action = event?.detail?.action
+      if (action === 'reset') resetCurrentView()
+      if (action === 'zoomIn') zoomCurrentView('in')
+      if (action === 'zoomOut') zoomCurrentView('out')
+      if (action === 'fullscreen') {
+        const host = canvasRef.current?.parentElement
+        if (host?.requestFullscreen && !document.fullscreenElement) host.requestFullscreen().catch(() => {})
+        else if (document.exitFullscreen && document.fullscreenElement) document.exitFullscreen().catch(() => {})
+      }
+    }
+
+    window.addEventListener('semantic-scene-command', onSceneCommand)
+    return () => window.removeEventListener('semantic-scene-command', onSceneCommand)
+  }, [])
+
   // Mark dirty on reactive changes
   useEffect(() => { dirtyRef.current = true }, [selectedClusterId, hoveredClusterId, showLabels, is3d])
 
@@ -596,13 +638,23 @@ export default function SemanticScene({ clusters, colorMode, viewMode, showLabel
 
       if (is3dRef.current) {
         const { zoom, panX, panY, w, h } = xf3d.current
-        const newZoom = Math.max(0.65, Math.min(38, zoom * factor))
-        const ratio = newZoom / zoom
-        xf3d.current = {
-          ...xf3d.current,
-          zoom: newZoom,
-          panX: (mx - w / 2) * (1 - ratio) + panX * ratio,
-          panY: (my - h / 2) * (1 - ratio) + panY * ratio,
+        const hasHorizontalGesture = Math.abs(e.deltaX || 0) > Math.abs(e.deltaY || 0) * 0.65
+        const shouldPan = e.shiftKey || hasHorizontalGesture
+        if (shouldPan) {
+          xf3d.current = {
+            ...xf3d.current,
+            panX: panX - (e.deltaX || 0) * 1.2,
+            panY: panY - (e.deltaY || 0) * 1.2,
+          }
+        } else {
+          const newZoom = Math.max(0.65, Math.min(38, zoom * factor))
+          const ratio = newZoom / zoom
+          xf3d.current = {
+            ...xf3d.current,
+            zoom: newZoom,
+            panX: (mx - w / 2) * (1 - ratio) + panX * ratio,
+            panY: (my - h / 2) * (1 - ratio) + panY * ratio,
+          }
         }
       } else {
         const { tx, ty, sc, w, h } = xf2d.current
@@ -624,7 +676,7 @@ export default function SemanticScene({ clusters, colorMode, viewMode, showLabel
   // ── Mouse ────────────────────────────────────────────────────────────────────
   function onMouseDown(e) {
     const { rotX, rotY, panX, panY } = xf3d.current
-    const mode = is3dRef.current && !(e.shiftKey || e.ctrlKey || e.button === 1 || e.button === 2) ? 'rotate' : 'pan'
+    const mode = is3dRef.current && !(e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.button === 1 || e.button === 2) ? 'rotate' : 'pan'
     dragRef.current = {
       on: true, sx: e.clientX, sy: e.clientY,
       stx: xf2d.current.tx, sty: xf2d.current.ty,
@@ -648,7 +700,7 @@ export default function SemanticScene({ clusters, colorMode, viewMode, showLabel
             rotX: Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, srX + dy * 0.006)),
           }
         } else {
-          xf3d.current = { ...xf3d.current, panX: dragRef.current.spx + dx, panY: dragRef.current.spy + dy }
+          xf3d.current = { ...xf3d.current, panX: dragRef.current.spx + dx * 1.35, panY: dragRef.current.spy + dy * 1.35 }
         }
       } else {
         xf2d.current = { ...xf2d.current, tx: dragRef.current.stx + dx, ty: dragRef.current.sty + dy }

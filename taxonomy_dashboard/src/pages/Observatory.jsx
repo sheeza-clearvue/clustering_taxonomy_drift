@@ -1,5 +1,5 @@
 import { useEffect, useState, lazy, Suspense } from 'react'
-import { RotateCcw, Map, Orbit } from 'lucide-react'
+import { RotateCcw, Map, Orbit, Search, SlidersHorizontal, Minus, Plus, Maximize2 } from 'lucide-react'
 import useStore from '../store/useStore.js'
 import RightInspector from '../components/layout/RightInspector.jsx'
 import { getFieldColor } from '../components/scene/sceneUtils.js'
@@ -203,6 +203,15 @@ export default function Observatory() {
   const [viewMode,       setViewMode]       = useState('map')
   const [showLabels,     setShowLabels]     = useState(false)
   const [sizeFilter,     setSizeFilter]     = useState(1)
+
+  const sendSceneCommand = (action) => {
+    window.dispatchEvent(new CustomEvent('semantic-scene-command', { detail: { action } }))
+  }
+
+  const resetScene = () => {
+    triggerCameraReset()
+    sendSceneCommand('reset')
+  }
 
   const selectedFields = activeFields?.length ? activeFields : (activeField ? [activeField] : [])
 
@@ -411,7 +420,7 @@ export default function Observatory() {
           </CtrlSection>
 
           {/* Reset view */}
-          <button onClick={triggerCameraReset}
+          <button onClick={resetScene}
             className="flex items-center justify-center gap-1.5 rounded-lg py-2 text-[9.5px] transition-all duration-150 mt-auto flex-shrink-0"
             style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(26,45,74,0.6)', color: '#475569' }}
             onMouseEnter={e => { e.currentTarget.style.color = '#00d4ff'; e.currentTarget.style.borderColor = 'rgba(0,212,255,0.3)' }}
@@ -429,19 +438,64 @@ export default function Observatory() {
             }
           </Suspense>
 
-          {/* Top info strip */}
-          <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-2"
-            style={{ background: 'linear-gradient(180deg, rgba(2,5,10,0.75) 0%, transparent 100%)', pointerEvents: 'none' }}>
-            <span className="text-[8.5px]" style={{ color: '#1e3450' }}>
-              {displayClusters.length.toLocaleString()} clusters · {fields.length} fields
-            </span>
-            <button onClick={triggerCameraReset}
-              className="flex items-center justify-center rounded p-1.5 transition-colors"
-              style={{ background: 'rgba(3,8,15,0.85)', border: '1px solid rgba(26,45,74,0.6)', color: '#334155', pointerEvents: 'auto' }}
-              onMouseEnter={e => e.currentTarget.style.color = '#00d4ff'}
-              onMouseLeave={e => e.currentTarget.style.color = '#334155'}>
-              <RotateCcw size={10} />
-            </button>
+          {/* Top semantic-map toolbar */}
+          <div className="absolute top-3 left-4 right-4 z-10 flex items-center justify-between gap-3" style={{ pointerEvents: 'none' }}>
+            <div className="flex items-center gap-5 rounded-lg px-3 py-2"
+              style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', backdropFilter: 'blur(14px)', boxShadow: '0 10px 30px rgba(0,0,0,0.28)' }}>
+              {[
+                ['Cluster', '#e5e7eb', 'circle'],
+                ['Centroid', '#3b82f6', 'ring'],
+                ['Medoid', '#f97316', 'diamond'],
+                ['Anomaly', '#ec4899', 'dot'],
+              ].map(([label, color, kind]) => (
+                <div key={label} className="flex items-center gap-1.5 text-[11px] text-star">
+                  {kind === 'diamond' ? <span className="w-2.5 h-2.5 rotate-45" style={{ border: `2px solid ${color}` }} />
+                    : kind === 'ring' ? <span className="w-3 h-3 rounded-full" style={{ border: `2px solid ${color}`, boxShadow: `0 0 8px ${color}77` }} />
+                    : kind === 'dot' ? <span className="w-3.5 h-3.5 rounded-full" style={{ background: color, boxShadow: `0 0 10px ${color}88` }} />
+                    : <span className="w-3.5 h-3.5 rounded-full" style={{ border: `2px solid ${color}` }} />}
+                  <span>{label}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2" style={{ pointerEvents: 'auto' }}>
+              <div className="hidden md:flex items-center gap-2 rounded-lg px-3 py-2 w-[280px]"
+                style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', backdropFilter: 'blur(14px)' }}>
+                <Search size={14} style={{ color: '#94a3b8' }} />
+                <input
+                  placeholder="Search cluster or label..."
+                  className="w-full bg-transparent outline-none text-[11px] text-star placeholder:text-slate-500"
+                  onKeyDown={e => {
+                    if (e.key !== 'Enter') return
+                    const q = e.currentTarget.value.trim().toLowerCase()
+                    if (!q) return
+                    const hit = displayClusters.find(c =>
+                      String(c.display_name || '').toLowerCase().includes(q) ||
+                      String(c.medoid_label || '').toLowerCase().includes(q) ||
+                      String(c.cluster_id || c.id || '').toLowerCase().includes(q)
+                    )
+                    if (hit) setSelectedClusterId(hit.id || hit.cluster_id)
+                  }}
+                />
+              </div>
+              <button className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors"
+                style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', color: '#94a3b8', backdropFilter: 'blur(14px)' }}>
+                <SlidersHorizontal size={14} />
+              </button>
+              <button onClick={resetScene} className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors"
+                style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', color: '#94a3b8', backdropFilter: 'blur(14px)' }}>
+                <RotateCcw size={14} />
+              </button>
+            </div>
+          </div>
+
+          {/* Bottom in-map controls */}
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center rounded-xl overflow-hidden"
+            style={{ background: 'rgba(3,8,15,0.84)', border: '1px solid rgba(71,85,105,0.42)', backdropFilter: 'blur(14px)', boxShadow: '0 10px 30px rgba(0,0,0,0.35)' }}>
+            <button onClick={() => sendSceneCommand('zoomOut')} className="w-10 h-9 flex items-center justify-center text-slate-300 hover:text-cyan transition-colors"><Minus size={14} /></button>
+            <div className="w-16 h-9 flex items-center justify-center text-[12px] text-star" style={{ borderLeft: '1px solid rgba(71,85,105,0.35)', borderRight: '1px solid rgba(71,85,105,0.35)' }}>100%</div>
+            <button onClick={() => sendSceneCommand('zoomIn')} className="w-10 h-9 flex items-center justify-center text-slate-300 hover:text-cyan transition-colors"><Plus size={16} /></button>
+            <button onClick={() => sendSceneCommand('fullscreen')} className="w-10 h-9 flex items-center justify-center text-slate-300 hover:text-cyan transition-colors" style={{ borderLeft: '1px solid rgba(71,85,105,0.35)' }}><Maximize2 size={15} /></button>
           </div>
         </div>
 
