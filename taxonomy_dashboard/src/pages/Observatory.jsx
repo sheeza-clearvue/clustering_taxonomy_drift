@@ -307,7 +307,7 @@ export default function Observatory() {
         {/* ── LEFT CONTROL PANEL ─────────────────────────────────────────────── */}
         <div className="flex flex-col flex-shrink-0 overflow-y-auto overflow-x-hidden gap-3.5 px-3 py-3"
           style={{
-            width: 'clamp(156px, 10vw, 176px)',
+            width: 'clamp(190px, 12vw, 220px)',
             background: 'linear-gradient(180deg, #070e1c 0%, #030810 100%)',
             borderRight: '1px solid rgba(26,45,74,0.65)',
             scrollbarWidth: 'thin', scrollbarColor: '#1a2d4a transparent',
@@ -326,15 +326,15 @@ export default function Observatory() {
 
           {/* View */}
           <CtrlSection label="View">
-            <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid rgba(26,45,74,0.65)' }}>
+            <div className="grid grid-cols-2 gap-1 rounded-lg p-1" style={{ border: '1px solid rgba(26,45,74,0.65)', background: 'rgba(3,8,15,0.65)' }}>
               {[['map', Map, 'Map'], ['3d', Orbit, '3D'], ['table', Table2, 'Table'], ['split', Columns, 'Split']].map(([mode, Icon, lbl]) => (
                 <button key={mode} onClick={() => setViewMode(mode)}
-                  className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[9px] font-semibold transition-all duration-150"
+                  className="flex items-center justify-center gap-1.5 rounded-md py-1.5 px-2 text-[9.5px] font-semibold transition-all duration-150 whitespace-nowrap"
                   style={viewMode === mode
-                    ? { background: 'rgba(0,212,255,0.16)', color: '#00d4ff' }
-                    : { background: 'rgba(3,8,15,0.85)', color: '#334155' }
+                    ? { background: 'rgba(0,212,255,0.16)', color: '#00d4ff', boxShadow: '0 0 10px rgba(0,212,255,0.12)' }
+                    : { background: 'rgba(3,8,15,0.85)', color: '#475569' }
                   }>
-                  <Icon size={10} /> {lbl}
+                  <Icon size={11} /> {lbl}
                 </button>
               ))}
             </div>
@@ -442,7 +442,7 @@ export default function Observatory() {
         {/* ── CENTER: OBSERVATORY WORKSPACE ───────────────────────────────────── */}
         <div className="relative flex-1 min-w-0 overflow-hidden">
           {!isTableView && (
-            <div className={isSplitView ? 'h-[58%] min-h-[260px] relative overflow-hidden border-b border-obs-border/60' : 'absolute inset-0 overflow-hidden'}>
+            <div className={isSplitView ? 'h-[60%] min-h-[300px] relative overflow-hidden border-b border-obs-border/60' : 'absolute inset-0 overflow-hidden'}>
               <Suspense fallback={<SceneLoader label="Initializing Semantic Map…" />}>
                 {!loading
                   ? <SemanticScene clusters={displayClusters} colorMode={colorMode} viewMode={sceneProjection} showLabels={showLabels} />
@@ -453,7 +453,7 @@ export default function Observatory() {
           )}
 
           {(isTableView || isSplitView) && (
-            <div className={isSplitView ? 'absolute left-0 right-0 bottom-0 h-[42%] min-h-[220px] overflow-hidden p-3' : 'absolute inset-0 overflow-hidden p-4 pt-16'}>
+            <div className={isSplitView ? 'absolute left-0 right-0 bottom-0 h-[40%] min-h-[240px] overflow-hidden p-4' : 'absolute inset-0 overflow-hidden p-5 pt-16'}>
               <div className="observatory-table-shell h-full overflow-hidden rounded-xl" style={{ background: 'rgba(3,8,15,0.78)', border: '1px solid rgba(26,45,74,0.72)' }}>
                 <ClusterTable clusters={displayClusters} loading={loading} error={null} />
               </div>
