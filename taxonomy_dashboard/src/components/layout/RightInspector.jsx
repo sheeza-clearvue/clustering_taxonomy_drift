@@ -185,8 +185,7 @@ export default function RightInspector({ clusterId }) {
               {[
                 ['overview', 'Overview'],
                 ['members', 'Members'],
-                ['anomalies', `Anomalies ${anomalyCount || ''}`],
-                ['drift', 'Drift'],
+                
               ].map(([key, label]) => (
                 <button key={key} onClick={() => setTab(key)} className="relative py-2 text-[10px] transition-colors" style={{ color: tab === key ? fc : '#94a3b8' }}>
                   {label}
@@ -264,31 +263,9 @@ export default function RightInspector({ clusterId }) {
             </section>
           )}
 
-          {tab === 'anomalies' && (
-            <section>
-              {sectionTitle('Anomaly Candidates')}
-              {anomalyRows.length ? (
-                <LabelList rows={anomalyRows} fc="#ef4444" limit={showAllLabels ? 500 : 40} />
-              ) : (
-                <div className="rounded-xl p-4 text-[11px] leading-relaxed" style={{ background: 'rgba(16,185,129,0.04)', border: '1px solid rgba(16,185,129,0.18)', color: '#94a3b8' }}>
-                  No anomaly-like member labels were detected in the loaded member sample for this cluster.
-                </div>
-              )}
-            </section>
-          )}
+          
 
-          {tab === 'drift' && (
-            <section>
-              {sectionTitle('Drift Signals')}
-              <div className="rounded-xl p-4 text-[11px] leading-relaxed" style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(71,85,105,0.32)', color: '#94a3b8' }}>
-                <div className="mb-3">This panel uses available cluster metadata only. Add timestamped cluster-run history later to show true temporal drift.</div>
-                <DetailRow label="Field" value={cluster.field_name} />
-                <DetailRow label="Current size" value={(cluster.cluster_size || tableLabels.length || 0).toLocaleString()} />
-                <DetailRow label="Medoid stability" value={medoidSimilarity != null ? medoidSimilarity.toFixed(3) : 'Not available'} />
-                <DetailRow label="Review priority" value={medoidSimilarity != null && medoidSimilarity < 0.86 ? 'Review suggested' : 'Normal'} pill color={medoidSimilarity != null && medoidSimilarity < 0.86 ? '#f97316' : '#10b981'} />
-              </div>
-            </section>
-          )}
+          
         </div>
       )}
     </motion.aside>
