@@ -16,8 +16,23 @@ function useCopy(text, ms = 1500) {
   return [copied, copy]
 }
 
+function renderSafeValue(value) {
+  if (value == null) return ''
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) return value.map(renderSafeValue).filter(Boolean).join(', ')
+  if (typeof value === 'object') {
+    return value.raw_label
+      || value.display_name
+      || value.normalized_label
+      || value.cluster_id
+      || JSON.stringify(value)
+  }
+  return String(value)
+}
+
 function StatRow({ label, value, mono, accent }) {
   if (!value && value !== 0) return null
+  const safeValue = renderSafeValue(value)
   const colors = { cyan: '#00d4ff', violet: '#a855f7', emerald: '#10b981', red: '#ef4444' }
   return (
     <div className="flex items-start justify-between gap-3 py-1.5 border-b border-obs-border/40 last:border-0">
@@ -26,7 +41,7 @@ function StatRow({ label, value, mono, accent }) {
         className={['text-[11px] text-right max-w-[60%]', mono && 'font-mono'].join(' ')}
         style={{ color: accent ? (colors[accent] || '#e2e8f0') : '#94a3b8', wordBreak: 'break-all' }}
       >
-        {value}
+        {safeValue}
       </span>
     </div>
   )
@@ -34,15 +49,17 @@ function StatRow({ label, value, mono, accent }) {
 
 function normalizeList(value) {
   if (!value) return []
-  if (Array.isArray(value)) return value.filter(Boolean)
+  if (Array.isArray(value)) return value.filter(Boolean).map(renderSafeValue).filter(Boolean)
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value)
-      if (Array.isArray(parsed)) return parsed.filter(Boolean)
+      if (Array.isArray(parsed)) return parsed.filter(Boolean).map(renderSafeValue).filter(Boolean)
+      if (parsed && typeof parsed === 'object') return [renderSafeValue(parsed)].filter(Boolean)
     } catch {}
     return value.split(/[,\n]/).map(v => v.trim()).filter(Boolean)
   }
-  return []
+  if (typeof value === 'object') return [renderSafeValue(value)].filter(Boolean)
+  return [String(value)]
 }
 
 function QualityItem({ type, text }) {
@@ -63,13 +80,14 @@ function QualityItem({ type, text }) {
 }
 
 function LabelBarRow({ label, count, max, color }) {
+  const safeLabel = renderSafeValue(label)
   const pct = max ? Math.max(4, (count / max) * 100) : 4
   return (
     <div className="flex items-center gap-2">
       <div className="w-10 h-1.5 rounded-full overflow-hidden bg-obs-elevated flex-shrink-0">
         <div style={{ width: `${pct}%`, background: color + '99', height: '100%', borderRadius: 999 }} />
       </div>
-      <span className="flex-1 text-[11px] text-nebula truncate" title={label}>{label.length > 35 ? label.slice(0, 35) + '…' : label}</span>
+      <span className="flex-1 text-[11px] text-nebula truncate" title={safeLabel}>{safeLabel.length > 35 ? safeLabel.slice(0, 35) + '…' : safeLabel}</span>
       <span className="text-[10px] text-dust flex-shrink-0">{count.toLocaleString()}</span>
     </div>
   )
@@ -86,10 +104,10 @@ function SimilarBtn({ cluster, onClick }) {
       onMouseEnter={e => e.currentTarget.style.borderColor = fc + '44'}
       onMouseLeave={e => e.currentTarget.style.borderColor = 'rgba(26,45,74,0.7)'}
     >
-      <span className="text-[10px] font-bold" style={{ color: fc }}>{cluster.field_name}</span>
-      <span className="text-[11px] text-star truncate max-w-[130px]">{cluster.display_name || <em className="text-dust">unnamed</em>}</span>
+      <span className="text-[10px] font-bold" style={{ color: fc }}>{renderSafeValue(cluster.field_name)}</span>
+      <span className="text-[11px] text-star truncate max-w-[130px]">{renderSafeValue(cluster.display_name) || <em className="text-dust">unnamed</em>}</span>
       <span className="text-[9px] text-dust">{sim != null ? `${(sim * 100).toFixed(1)}% cosine` : `${(cluster.cluster_size || 0).toLocaleString()} items`}</span>
-      {cluster.interpretation && <span className="text-[8.5px]" style={{ color: cluster.same_field ? '#10b981' : '#f59e0b' }}>{cluster.interpretation}</span>}
+      {cluster.interpretation && <span className="text-[8.5px]" style={{ color: cluster.same_field ? '#10b981' : '#f59e0b' }}>{renderSafeValue(cluster.interpretation)}</span>}
     </button>
   )
 }
@@ -171,7 +189,7 @@ export default function RightInspector({ clusterId }) {
             className="text-[10px] font-bold px-2 py-0.5 rounded-full flex-shrink-0"
             style={{ background: fc + '18', color: fc, border: `1px solid ${fc}33` }}
           >
-            {cluster?.field_name || '…'}
+            {renderSafeValue(cluster?.field_name) || '…'}
           </span>
           {cluster?.is_true_anomaly_cluster && (
             <span className="text-[9px] font-bold px-2 py-0.5 rounded-full flex-shrink-0"
@@ -200,13 +218,13 @@ export default function RightInspector({ clusterId }) {
           {/* Hero */}
           <div className="px-4 pt-4 pb-3" style={{ borderBottom: '1px solid rgba(26,45,74,0.5)' }}>
             <div className="text-[15px] font-bold text-star leading-snug mb-1.5">
-              {cluster.display_name || <span className="text-dust italic">Unnamed Cluster</span>}
+              {renderSafeValue(cluster.display_name) || <span className="text-dust italic">Unnamed Cluster</span>}
             </div>
             <div
               className="flex items-center gap-2 group cursor-pointer"
               onClick={copyId}
             >
-              <span className="text-[10px] font-mono text-dust truncate">{cluster.cluster_id}</span>
+              <span className="text-[10px] font-mono text-dust truncate">{renderSafeValue(cluster.cluster_id)}</span>
               <span className="text-dust/40 group-hover:text-cyan transition-colors duration-150">
                 {copiedId ? <CheckCheck size={10} style={{ color: '#10b981' }} /> : <Copy size={10} />}
               </span>
@@ -214,7 +232,7 @@ export default function RightInspector({ clusterId }) {
             {cluster.naming_reason && (
               <div className="mt-2 text-[11px] text-nebula italic leading-snug"
                 style={{ borderLeft: `2px solid ${fc}`, paddingLeft: 8 }}>
-                "{cluster.naming_reason}"
+                "{renderSafeValue(cluster.naming_reason)}"
               </div>
             )}
           </div>
@@ -242,7 +260,7 @@ export default function RightInspector({ clusterId }) {
               </div>
               <div className="font-mono text-[11px] text-star rounded-md px-3 py-2"
                 style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(26,45,74,0.7)', wordBreak: 'break-all' }}>
-                {cluster.medoid_label}
+                {renderSafeValue(cluster.medoid_label)}
               </div>
             </div>
           )}
@@ -262,7 +280,7 @@ export default function RightInspector({ clusterId }) {
           {/* Identity */}
           <div className="px-4 py-3" style={{ borderBottom: '1px solid rgba(26,45,74,0.5)' }}>
             <div className="text-[9px] uppercase tracking-widest text-dust/60 mb-2">Identity</div>
-            <StatRow label="Field"     value={cluster.field_name} accent="cyan" />
+            <StatRow label="Field"     value={renderSafeValue(cluster.field_name)} accent="cyan" />
             <StatRow label="Cluster ID" value={cluster.cluster_id} mono />
             <StatRow label="Anomaly"   value={cluster.is_true_anomaly_cluster ? 'true' : 'false'} accent={cluster.is_true_anomaly_cluster ? 'red' : 'emerald'} />
             <StatRow label="Version"   value={cluster.cluster_version} />
@@ -300,7 +318,7 @@ export default function RightInspector({ clusterId }) {
               {labels.map((l, i) => (
                 <LabelBarRow
                   key={i}
-                  label={l.raw_label}
+                  label={l.raw_label || l.normalized_label || l}
                   count={Number(l.value_count) || 1}
                   max={maxCount}
                   color={fc}
