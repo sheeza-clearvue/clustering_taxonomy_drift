@@ -212,7 +212,7 @@ function draw2D(ctx, cls, w, h, tx, ty, sc, selId, hovId, showL) {
 }
 
 // ── 3D draw ────────────────────────────────────────────────────────────────────
-function project3D(x, y, z, rotX, rotY, fov) {
+function project3D(x, y, z, rotX, rotY, fov, zoom) {
   // Rotate Y
   const x1 = x * Math.cos(rotY) + z * Math.sin(rotY)
   const z1 = -x * Math.sin(rotY) + z * Math.cos(rotY)
@@ -221,10 +221,10 @@ function project3D(x, y, z, rotX, rotY, fov) {
   const z2 = y * Math.sin(rotX) + z1 * Math.cos(rotX)
   // Perspective
   const s = fov / Math.max(fov + z2, 8)
-  return { sx: x1 * s, sy: -y2 * s, z: z2, s }
+  return { sx: x1 * s * zoom, sy: -y2 * s * zoom, z: z2, s: s * zoom }
 }
 
-function draw3D(ctx, cls, w, h, rotX, rotY, fov, selId, hovId) {
+function draw3D(ctx, cls, w, h, rotX, rotY, fov, zoom, panX, panY, selId, hovId) {
   ctx.fillStyle = BG3D; ctx.fillRect(0, 0, w, h)
 
   // Stars
@@ -241,12 +241,12 @@ function draw3D(ctx, cls, w, h, rotX, rotY, fov, selId, hovId) {
   // Project all clusters
   const items = cls.map(c => {
     const [ox, oy, oz] = c._pos
-    const { sx, sy, z, s } = project3D(ox, oy, oz, rotX, rotY, fov)
+    const { sx, sy, z, s } = project3D(ox, oy, oz, rotX, rotY, fov, zoom)
     const isSel = selId !== null && selId === String(c.id)
     const isHov = hovId !== null && hovId === String(c.id)
     const baseR = Math.max((c._size || 0.5) * s * 0.9, 0.5)
     const r = baseR * (isSel ? 1.8 : isHov ? 1.4 : 1.0)
-    return { c, px: w / 2 + sx, py: h / 2 + sy, r, z, isSel, isHov }
+    return { c, px: w / 2 + panX + sx, py: h / 2 + panY + sy, r, z, isSel, isHov }
   }).sort((a, b) => b.z - a.z)  // painter's: far first
 
   const maxZ = 80, minZ = -80
@@ -305,8 +305,8 @@ export default function SemanticScene({ clusters, colorMode, viewMode, showLabel
 
   const canvasRef  = useRef(null)
   const xf2d       = useRef({ tx: 0, ty: 0, sc: 5, w: 0, h: 0 })
-  const xf3d       = useRef({ rotX: 0.28, rotY: -0.45, fov: 200, w: 0, h: 0 })
-  const dragRef    = useRef({ on: false, sx: 0, sy: 0, stx: 0, sty: 0, srot: [0, 0], moved: false })
+  const xf3d       = useRef({ rotX: 0.28, rotY: -0.45, fov: 240, zoom: 4.2, panX: 0, panY: 0, w: 0, h: 0 })
+  const dragRef    = useRef({ on: false, sx: 0, sy: 0, stx: 0, sty: 0, spx: 0, spy: 0, srot: [0, 0], mode: 'pan', moved: false })
   const rafRef     = useRef(null)
   const dirtyRef   = useRef(true)
   const fitted2d   = useRef(false)
@@ -333,7 +333,7 @@ export default function SemanticScene({ clusters, colorMode, viewMode, showLabel
     const { w, h } = is3d ? xf3d.current : xf2d.current
     if (!w || !h) return
     if (is3d) {
-      xf3d.current = { rotX: 0.28, rotY: -0.45, fov: 200, w, h }
+      xf3d.current = { rotX: 0.28, rotY: -0.45, fov: 240, zoom: 4.2, panX: 0, panY: 0, w, h }
     } else {
       if (posRef.current.length) {
         const fit = fitAll(posRef.current, w, h)
@@ -353,12 +353,12 @@ export default function SemanticScene({ clusters, colorMode, viewMode, showLabel
     const ctx = canvas.getContext('2d')
 
     if (is3dRef.current) {
-      const { rotX, rotY, fov, w, h } = xf3d.current
+      const { rotX, rotY, fov, zoom, panX, panY, w, h } = xf3d.current
       if (!w || !h) return
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       const selId = selRef.current != null ? String(selRef.current) : null
       const hovId = hovRef.current != null ? String(hovRef.current) : null
-      draw3D(ctx, posRef.current, w, h, rotX, rotY, fov, selId, hovId)
+      draw3D(ctx, posRef.current, w, h, rotX, rotY, fov, zoom, panX, panY, selId, hovId)
     } else {
       const { tx, ty, sc, w, h } = xf2d.current
       if (!w || !h) return
@@ -423,17 +423,26 @@ export default function SemanticScene({ clusters, colorMode, viewMode, showLabel
     if (!canvas) return
     function onWheel(e) {
       e.preventDefault()
-      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12
+      const rect = canvas.getBoundingClientRect()
+      const mx = e.clientX - rect.left
+      const my = e.clientY - rect.top
+      const delta = Math.max(-80, Math.min(80, e.deltaY || 0))
+      const factor = Math.exp(-delta * 0.0028)
+
       if (is3dRef.current) {
-        xf3d.current = { ...xf3d.current, fov: Math.max(60, Math.min(600, xf3d.current.fov * factor)) }
+        const { zoom, panX, panY, w, h } = xf3d.current
+        const newZoom = Math.max(0.65, Math.min(38, zoom * factor))
+        const ratio = newZoom / zoom
+        xf3d.current = {
+          ...xf3d.current,
+          zoom: newZoom,
+          panX: (mx - w / 2) * (1 - ratio) + panX * ratio,
+          panY: (my - h / 2) * (1 - ratio) + panY * ratio,
+        }
       } else {
-        const rect = canvas.getBoundingClientRect()
-        const mx = e.clientX - rect.left
-        const my = e.clientY - rect.top
         const { tx, ty, sc, w, h } = xf2d.current
-        const newSc = Math.max(0.4, Math.min(120, sc * factor))
+        const newSc = Math.max(0.25, Math.min(260, sc * factor))
         const ratio = newSc / sc
-        // Correct pivot formula: world point under cursor stays fixed
         xf2d.current = {
           ...xf2d.current,
           sc: newSc,
@@ -449,13 +458,15 @@ export default function SemanticScene({ clusters, colorMode, viewMode, showLabel
 
   // ── Mouse ────────────────────────────────────────────────────────────────────
   function onMouseDown(e) {
-    const { rotX, rotY } = xf3d.current
+    const { rotX, rotY, panX, panY } = xf3d.current
+    const mode = is3dRef.current && !(e.shiftKey || e.ctrlKey || e.button === 1 || e.button === 2) ? 'rotate' : 'pan'
     dragRef.current = {
       on: true, sx: e.clientX, sy: e.clientY,
       stx: xf2d.current.tx, sty: xf2d.current.ty,
-      srot: [rotX, rotY], moved: false,
+      spx: panX, spy: panY,
+      srot: [rotX, rotY], mode, moved: false,
     }
-    e.currentTarget.style.cursor = 'grabbing'
+    e.currentTarget.style.cursor = mode === 'rotate' ? 'grabbing' : 'move'
   }
 
   function onMouseMove(e) {
@@ -464,11 +475,15 @@ export default function SemanticScene({ clusters, colorMode, viewMode, showLabel
       const dy = e.clientY - dragRef.current.sy
       if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragRef.current.moved = true
       if (is3dRef.current) {
-        const [srX, srY] = dragRef.current.srot
-        xf3d.current = {
-          ...xf3d.current,
-          rotY: srY + dx * 0.006,
-          rotX: Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, srX + dy * 0.006)),
+        if (dragRef.current.mode === 'rotate') {
+          const [srX, srY] = dragRef.current.srot
+          xf3d.current = {
+            ...xf3d.current,
+            rotY: srY + dx * 0.006,
+            rotX: Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, srX + dy * 0.006)),
+          }
+        } else {
+          xf3d.current = { ...xf3d.current, panX: dragRef.current.spx + dx, panY: dragRef.current.spy + dy }
         }
       } else {
         xf2d.current = { ...xf2d.current, tx: dragRef.current.stx + dx, ty: dragRef.current.sty + dy }
@@ -518,6 +533,7 @@ export default function SemanticScene({ clusters, colorMode, viewMode, showLabel
         display: 'block', width: '100%', height: '100%',
         cursor: is3d ? 'grab' : 'crosshair', userSelect: 'none',
       }}
+      onContextMenu={(e) => e.preventDefault()}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
