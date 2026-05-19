@@ -80,13 +80,13 @@ export default function Sidebar() {
     <aside
       className="flex flex-col flex-shrink-0 overflow-hidden"
       style={{
-        width: 220,
+        width: 'clamp(184px, 13vw, 220px)',
         background: 'linear-gradient(180deg, #060d1a 0%, #03080f 100%)',
         borderRight: '1px solid rgba(26,45,74,0.8)',
       }}
     >
       {/* Brand */}
-      <div className="flex items-center gap-3 px-4 py-5 border-b border-obs-border/60">
+      <div className="flex items-center gap-3 px-3 py-4 border-b border-obs-border/60">
         <div
           className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center"
           style={{

@@ -301,7 +301,7 @@ export default function Observatory() {
         {/* ── LEFT CONTROL PANEL ─────────────────────────────────────────────── */}
         <div className="flex flex-col flex-shrink-0 overflow-y-auto overflow-x-hidden gap-3.5 px-3 py-3"
           style={{
-            width: 176,
+            width: 'clamp(156px, 10vw, 176px)',
             background: 'linear-gradient(180deg, #070e1c 0%, #030810 100%)',
             borderRight: '1px solid rgba(26,45,74,0.65)',
             scrollbarWidth: 'thin', scrollbarColor: '#1a2d4a transparent',
@@ -502,7 +502,7 @@ export default function Observatory() {
         {/* ── RIGHT INSPECTOR ───────────────────────────────────────────────── */}
         <div className="flex-shrink-0 overflow-hidden"
           style={{
-            width: 320,
+            width: 'clamp(300px, 21vw, 340px)',
             background: 'linear-gradient(180deg, #060d1a 0%, #03080f 100%)',
             borderLeft: '1px solid rgba(26,45,74,0.75)',
           }}>
@@ -518,12 +518,13 @@ export default function Observatory() {
       </div>
 
       {/* ══ BOTTOM INTELLIGENCE ROW ═════════════════════════════════════════════ */}
-      <div className="flex-shrink-0 grid gap-2 px-3 py-2 overflow-y-auto"
+      <div className="flex-shrink-0 grid gap-2 px-2.5 py-2 overflow-hidden"
         style={{
           background: 'linear-gradient(0deg, rgba(2,5,10,0.99) 0%, rgba(4,10,20,0.95) 100%)',
           borderTop: '1px solid rgba(26,45,74,0.6)',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-          maxHeight: 220,
+          gridTemplateColumns: 'repeat(6, minmax(150px, 1fr))',
+          height: 118,
+          maxHeight: 118,
           scrollbarWidth: 'thin', scrollbarColor: '#1a2d4a transparent',
         }}>
 
