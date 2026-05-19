@@ -192,24 +192,35 @@ function draw2D(ctx, cls, w, h, tx, ty, sc, selId, hovId, showL) {
 
   // Labels
   if (showL || sc > 9) {
-    const thresh = showL ? (sc > 18 ? 0.16 : sc > 10 ? 0.34 : 0.55) : (sc > 24 ? 0.28 : sc > 14 ? 0.48 : 0.70)
-    const cap    = showL ? (sc > 18 ? 90 : sc > 10 ? 42 : 18) : (sc > 24 ? 34 : sc > 14 ? 18 : 8)
-    const labCls = cls.filter(c => (c._sizeRatio || 0) >= thresh && String(c.id) !== selId && String(c.id) !== hovId)
-      .sort((a, b) => (b._sizeRatio || 0) - (a._sizeRatio || 0)).slice(0, cap)
+    // When the label toggle is ON, do not cap labels. Draw every visible
+    // filtered cluster label. Auto-label mode is still gated so the map stays
+    // readable when labels are OFF.
+    const labCls = showL
+      ? cls.filter(c => String(c.id) !== selId && String(c.id) !== hovId)
+      : cls
+          .filter(c => {
+            const ratio = c._sizeRatio || 0
+            const threshold = sc > 24 ? 0.28 : sc > 14 ? 0.48 : 0.70
+            return ratio >= threshold && String(c.id) !== selId && String(c.id) !== hovId
+          })
+          .sort((a, b) => (b._sizeRatio || 0) - (a._sizeRatio || 0))
+          .slice(0, sc > 24 ? 34 : sc > 14 ? 18 : 8)
 
     ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+    ctx.font = showL && cls.length > 1200 ? '7.5px Inter,system-ui,sans-serif' : '9px Inter,system-ui,sans-serif'
     for (const c of labCls) {
-      const name = c.display_name || c.medoid_label
+      const name = c.display_name || c.medoid_label || c.cluster_id
       if (!name) continue
       const [px, py] = w2c(c._pos[0], c._pos[1], w, h, tx, ty, sc)
-      if (px < -130 || px > w + 130 || py < -22 || py > h + 22) continue
+      if (px < -150 || px > w + 150 || py < -30 || py > h + 30) continue
       const r = Math.max((c._size || 0.5) * sc, 1)
-      const lbl = shortLabel(name, 26)
-      ctx.font = '9px Inter,system-ui,sans-serif'
+      const lbl = shortLabel(name, showL && cls.length > 1200 ? 22 : 26)
       const tw = ctx.measureText(lbl).width
-      roundRect(ctx, px - tw / 2 - 4, py + r + 3, tw + 8, 14, 3)
-      ctx.fillStyle = 'rgba(6,10,20,0.72)'; ctx.fill()
-      ctx.fillStyle = 'rgba(148,163,184,0.9)'; ctx.fillText(lbl, px, py + r + 5)
+      roundRect(ctx, px - tw / 2 - 4, py + r + 3, tw + 8, 13, 3)
+      ctx.fillStyle = showL ? 'rgba(6,10,20,0.64)' : 'rgba(6,10,20,0.72)'
+      ctx.fill()
+      ctx.fillStyle = showL ? 'rgba(226,232,240,0.82)' : 'rgba(148,163,184,0.9)'
+      ctx.fillText(lbl, px, py + r + 5)
     }
     ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'
   }
@@ -282,34 +293,35 @@ function draw3D(ctx, cls, w, h, rotX, rotY, fov, zoom, panX, panY, selId, hovId,
 
 
 
-  // Labels in 3D mode. The toggle must override zoom gating, while auto-labels still
-  // appear for the largest nearby clusters at high zoom.
+  // Labels in 3D mode. When the label toggle is ON, do not cap labels.
+  // Draw every visible filtered cluster label after projection. Auto-label mode
+  // remains capped when the toggle is OFF.
   if (showL || zoom > 7.5) {
-    const labelCap = showL ? (zoom > 12 ? 140 : 80) : 28
-    const labelThreshold = showL ? (zoom > 12 ? 0.08 : 0.20) : 0.55
-    const labelItems = items
-      .filter(item => item.r > 1.1 && (item.c._sizeRatio || 0) >= labelThreshold)
-      .sort((a, b) => (b.c._sizeRatio || 0) - (a.c._sizeRatio || 0))
-      .slice(0, labelCap)
+    const labelItems = showL
+      ? items.filter(item => item.r > 0.35)
+      : items
+          .filter(item => item.r > 1.1 && (item.c._sizeRatio || 0) >= 0.55)
+          .sort((a, b) => (b.c._sizeRatio || 0) - (a.c._sizeRatio || 0))
+          .slice(0, 28)
 
     ctx.textAlign = 'center'
     ctx.textBaseline = 'top'
-    ctx.font = '9px Inter,system-ui,sans-serif'
+    ctx.font = showL && cls.length > 1200 ? '7.5px Inter,system-ui,sans-serif' : '9px Inter,system-ui,sans-serif'
     for (const item of labelItems) {
       const { c, px, py, r } = item
-      if (px < -120 || px > w + 120 || py < -28 || py > h + 28) continue
+      if (px < -150 || px > w + 150 || py < -34 || py > h + 34) continue
       const name = c.display_name || c.medoid_label || c.cluster_id
       if (!name) continue
-      const lbl = shortLabel(name, 28)
+      const lbl = shortLabel(name, showL && cls.length > 1200 ? 22 : 28)
       const tw = ctx.measureText(lbl).width
-      roundRect(ctx, px - tw / 2 - 5, py + r + 4, tw + 10, 15, 4)
-      ctx.fillStyle = 'rgba(3,6,16,0.82)'
+      roundRect(ctx, px - tw / 2 - 5, py + r + 4, tw + 10, 14, 4)
+      ctx.fillStyle = showL ? 'rgba(3,6,16,0.68)' : 'rgba(3,6,16,0.82)'
       ctx.fill()
-      ctx.strokeStyle = 'rgba(255,255,255,0.07)'
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)'
       ctx.lineWidth = 1
       ctx.stroke()
-      ctx.fillStyle = 'rgba(226,232,240,0.90)'
-      ctx.fillText(lbl, px, py + r + 7)
+      ctx.fillStyle = showL ? 'rgba(226,232,240,0.82)' : 'rgba(226,232,240,0.90)'
+      ctx.fillText(lbl, px, py + r + 6)
     }
     ctx.textAlign = 'left'
     ctx.textBaseline = 'alphabetic'
