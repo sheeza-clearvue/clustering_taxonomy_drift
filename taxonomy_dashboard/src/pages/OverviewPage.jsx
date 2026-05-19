@@ -621,7 +621,15 @@ export default function OverviewPage() {
                       ))}
                     </tbody>
                   </table>
-                  {!runRows.length && <div className="p-4 text-[11px] text-dust">No taxonomy_run_metadata rows returned.</div>}
+                  {!runRows.length && (
+                    <div className="p-4 text-[11px] text-dust">
+                      {data.runMetadata?.table_exists === false
+                        ? 'Table taxonomy_run_metadata does not exist. Run the pipeline to generate run metadata.'
+                        : data.runMetadata?.table_exists === true
+                          ? 'taxonomy_run_metadata table exists but contains no rows yet.'
+                          : 'Run metadata unavailable — server may be unreachable.'}
+                    </div>
+                  )}
                 </div>
               </div>
               <div>

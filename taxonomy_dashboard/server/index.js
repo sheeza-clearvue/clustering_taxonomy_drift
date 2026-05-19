@@ -1200,7 +1200,7 @@ app.get('/api/duplicate-name-intelligence', async (req, res) => {
 app.get('/api/run-metadata', async (req, res) => {
   try {
     const exists = await tableExists('taxonomy_run_metadata');
-    if (!exists) return res.json({ runs: [], fields_with_runs: 0, latest_created_at: null });
+    if (!exists) return res.json({ runs: [], fields_with_runs: 0, latest_created_at: null, table_exists: false });
 
     const cols = await getCols('taxonomy_run_metadata');
     const select = [
@@ -1264,6 +1264,7 @@ app.get('/api/run-metadata', async (req, res) => {
       runs,
       fields_with_runs: fields.size,
       latest_created_at: runs[0]?.created_at || null,
+      table_exists: true,
     });
   } catch (err) { console.error('/api/run-metadata:', err.message); res.status(500).json({ error: err.message }); }
 });
