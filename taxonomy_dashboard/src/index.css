@@ -273,17 +273,45 @@ input, select { font: inherit; color: inherit; background: none }
 .vtable-wrap {
   background: var(--bg-2); border: 1px solid var(--border);
   border-radius: var(--r); overflow: hidden;
+  display: flex; flex-direction: column; min-height: 0;
 }
 .vtable-head-row {
   display: flex; align-items: center; padding: 8px 14px;
   background: var(--bg-3); border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .vtable-count { font-size: 11px; color: var(--text-2) }
 
-.vtable-container { overflow-y: auto; max-height: calc(100vh - 260px) }
+.vtable-container {
+  min-height: 0;
+  max-height: calc(100vh - 260px);
+  display: flex;
+  flex-direction: column;
+}
+.vtable-scroll-x {
+  flex: 1;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148,163,184,0.45) rgba(15,23,42,0.55);
+}
+.vtable-scroll-x::-webkit-scrollbar { height: 10px }
+.vtable-scroll-x::-webkit-scrollbar-track { background: rgba(15,23,42,0.55) }
+.vtable-scroll-x::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.45); border-radius: 999px }
+.vtable-content {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
 
 .vtable-header-table, .vtable-inner {
-  width: 100%; border-collapse: collapse; table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+}
+.vtable-header-table {
+  flex-shrink: 0;
 }
 .vtable-header-table thead tr { background: var(--bg-3) }
 .vtable-header-table th {
@@ -292,22 +320,51 @@ input, select { font: inherit; color: inherit; background: none }
   text-transform: uppercase; letter-spacing: 0.6px;
   user-select: none; white-space: nowrap;
   border-bottom: 1px solid var(--border);
+  background: var(--bg-3);
+  overflow: hidden; text-overflow: ellipsis;
 }
 .vtable-header-table th.th-right { text-align: right }
 .vtable-header-table th.th-sortable { cursor: pointer }
 .vtable-header-table th.th-sortable:hover { color: var(--text) }
+.th-label { vertical-align: middle }
 
-.vtable-body { overflow-y: auto }
+.vtable-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148,163,184,0.45) transparent;
+}
 .vtable-inner td {
   padding: 7px 12px; font-size: 12px; color: var(--text-2);
   border-bottom: 1px solid rgba(45,45,50,0.7);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: var(--bg-2);
+}
+.vtable-sticky-col {
+  position: sticky;
+  z-index: 3;
+}
+.vtable-header-table th.vtable-sticky-col {
+  z-index: 5;
+  background: var(--bg-3);
+}
+.vtable-inner td.vtable-sticky-col {
+  background: var(--bg-2);
+}
+.vtable-sticky-col-last {
+  box-shadow: 8px 0 14px -12px rgba(0,0,0,0.9), 1px 0 0 rgba(71,85,105,0.35);
 }
 .vtable-row { cursor: pointer; transition: background 0.08s }
 .vtable-row:hover td { background: rgba(255,255,255,0.025) }
+.vtable-row:hover td.vtable-sticky-col { background: #09111f }
 .vtable-row.row-selected td { background: rgba(86,156,214,0.1) }
+.vtable-row.row-selected td.vtable-sticky-col { background: #0b1929 }
 .vtable-row.row-anomaly td  { background: rgba(244,71,71,0.03) }
+.vtable-row.row-anomaly td.vtable-sticky-col { background: #100b12 }
 .vtable-row.row-anomaly:hover td { background: rgba(244,71,71,0.07) }
+.vtable-row.row-anomaly:hover td.vtable-sticky-col { background: #1a0c13 }
 
 .cell-mono    { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11px; color: var(--text-3) !important }
 .cell-name    { color: var(--text) !important; font-weight: 500 }
@@ -1074,6 +1131,13 @@ input, select { font: inherit; color: inherit; background: none }
   max-height: none;
   display: flex;
   flex-direction: column;
+}
+.observatory-table-shell .vtable-scroll-x {
+  flex: 1;
+  min-height: 0;
+}
+.observatory-table-shell .vtable-content {
+  height: 100%;
 }
 .observatory-table-shell .vtable-body {
   flex: 1;

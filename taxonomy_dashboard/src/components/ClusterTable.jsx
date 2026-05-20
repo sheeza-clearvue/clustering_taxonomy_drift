@@ -8,16 +8,22 @@ const ROW_H   = 40
 const OVERSCAN = 8
 
 const COLUMNS = [
-  { key: 'field_name',              label: 'Field',       sortable: true,  width: 100 },
-  { key: 'display_name',            label: 'Name',        sortable: true,  width: 200 },
-  { key: 'cluster_size',            label: 'Size',        sortable: true,  width: 72,  align: 'right' },
-  { key: 'total_occurrences',       label: 'Occ.',        sortable: true,  width: 80,  align: 'right' },
-  { key: 'label_count',             label: 'Labels',      sortable: true,  width: 68,  align: 'right' },
-  { key: 'medoid_label',            label: 'Medoid',      sortable: false, width: 170 },
-  { key: 'is_true_anomaly_cluster', label: 'Type',        sortable: true,  width: 88  },
-  { key: 'naming_method',           label: 'Method',      sortable: false, width: 96  },
-  { key: 'cluster_id',              label: 'ID',          sortable: true,  width: 80,  mono: true },
+  { key: 'field_name',              label: 'Field',       sortable: true,  width: 126, sticky: true },
+  { key: 'display_name',            label: 'Name',        sortable: true,  width: 230, sticky: true },
+  { key: 'cluster_size',            label: 'Size',        sortable: true,  width: 78,  align: 'right' },
+  { key: 'total_occurrences',       label: 'Occ.',        sortable: true,  width: 86,  align: 'right' },
+  { key: 'label_count',             label: 'Labels',      sortable: true,  width: 76,  align: 'right' },
+  { key: 'medoid_label',            label: 'Medoid',      sortable: false, width: 190 },
+  { key: 'is_true_anomaly_cluster', label: 'Type',        sortable: true,  width: 98  },
+  { key: 'naming_method',           label: 'Method',      sortable: false, width: 148 },
+  { key: 'cluster_id',              label: 'ID',          sortable: true,  width: 136, mono: true },
 ]
+
+const TABLE_W = COLUMNS.reduce((sum, c) => sum + c.width, 0)
+const STICKY_LEFTS = COLUMNS.reduce((acc, col, idx) => {
+  acc[idx] = idx === 0 ? 0 : acc[idx - 1] + COLUMNS[idx - 1].width
+  return acc
+}, {})
 
 function SortIcon({ col, sortKey, sortDir }) {
   if (sortKey !== col) return <ChevronsUpDown size={10} className="sort-icon-dim" />
@@ -34,7 +40,29 @@ function TypeBadge({ isAnomaly }) {
 
 function MethodChip({ method }) {
   if (!method) return <span className="cell-method">—</span>
-  return <span className="method-chip">{method}</span>
+  return <span className="method-chip" title={method}>{method}</span>
+}
+
+function columnStyle(col, idx) {
+  const style = {
+    width: `${col.width}px`,
+    minWidth: `${col.width}px`,
+    maxWidth: `${col.width}px`,
+  }
+  if (col.sticky) style.left = `${STICKY_LEFTS[idx]}px`
+  return style
+}
+
+function columnClass(col, idx, extra = '') {
+  return [
+    extra,
+    col.sticky && 'vtable-sticky-col',
+    col.sticky && idx === 1 && 'vtable-sticky-col-last',
+  ].filter(Boolean).join(' ')
+}
+
+function getClusterName(row) {
+  return row.display_name || row.medoid_label || row.representative_label || row.cluster_id || 'unnamed'
 }
 
 function VirtualBody({ rows, onRowClick, selectedId }) {
@@ -63,14 +91,15 @@ function VirtualBody({ rows, onRowClick, selectedId }) {
       className="vtable-body"
       onScroll={e => setScrollTop(e.currentTarget.scrollTop)}
     >
-      <table className="vtable-inner">
+      <table className="vtable-inner" style={{ width: TABLE_W, minWidth: TABLE_W }}>
         <colgroup>
-          {COLUMNS.map(c => <col key={c.key} style={{ width: c.width }} />)}
+          {COLUMNS.map(c => <col key={c.key} style={{ width: `${c.width}px` }} />)}
         </colgroup>
         <tbody>
           {padTop > 0 && <tr style={{ height: padTop }}><td colSpan={COLUMNS.length} /></tr>}
           {visible.map((row, idx) => {
             const fc = getFieldColor(row.field_name)
+            const clusterName = getClusterName(row)
             return (
               <tr
                 key={row.id ?? `${row.field_name}-${row.cluster_id}-${start + idx}`}
@@ -81,16 +110,21 @@ function VirtualBody({ rows, onRowClick, selectedId }) {
                 ].filter(Boolean).join(' ')}
                 onClick={() => onRowClick(row)}
               >
-                <td>
+                <td className={columnClass(COLUMNS[0], 0)} style={columnStyle(COLUMNS[0], 0)}>
                   <span
                     className="tag-field"
+                    title={row.field_name || 'Unknown field'}
                     style={{ background: fc + '18', color: fc, border: `1px solid ${fc}30` }}
                   >
-                    {row.field_name}
+                    {row.field_name || 'unknown'}
                   </span>
                 </td>
-                <td className="cell-name" title={row.display_name || ''}>
-                  {row.display_name || <span className="unnamed">unnamed</span>}
+                <td
+                  className={columnClass(COLUMNS[1], 1, 'cell-name')}
+                  style={columnStyle(COLUMNS[1], 1)}
+                  title={clusterName}
+                >
+                  {row.display_name ? clusterName : <span className="unnamed">{clusterName}</span>}
                 </td>
                 <td className="cell-num">{fmt(row.cluster_size)}</td>
                 <td className="cell-num">{fmt(row.total_occurrences)}</td>
@@ -139,7 +173,7 @@ export default function ClusterTable({ clusters, loading, error }) {
     setSelectedClusterId(prev => String(prev) === String(row.id) ? null : row.id)
   }, [setSelectedClusterId])
 
-  if (error)   return <div className="state-error">⚠ {error}</div>
+  if (error)   return <div className="state-error">{error}</div>
   if (loading) return <div className="state-loading"><span className="loading-dots" />Loading clusters…</div>
   if (!sorted.length) return <div className="state-empty">No clusters match the current filters.</div>
 
@@ -149,37 +183,43 @@ export default function ClusterTable({ clusters, loading, error }) {
         <span className="vtable-count">{clusters.length.toLocaleString()} clusters</span>
       </div>
       <div className="vtable-container">
-        <table className="vtable-header-table">
-          <colgroup>
-            {COLUMNS.map(c => <col key={c.key} style={{ width: c.width }} />)}
-          </colgroup>
-          <thead>
-            <tr>
-              {COLUMNS.map(col => (
-                <th
-                  key={col.key}
-                  className={[
-                    col.align === 'right' && 'th-right',
-                    col.sortable          && 'th-sortable',
-                    sortKey === col.key   && 'th-sorted',
-                  ].filter(Boolean).join(' ')}
-                  onClick={() => col.sortable && handleSort(col.key)}
-                >
-                  {col.label}
-                  {col.sortable && (
-                    <SortIcon col={col.key} sortKey={sortKey} sortDir={sortDir} />
-                  )}
-                </th>
-              ))}
-            </tr>
-          </thead>
-        </table>
+        <div className="vtable-scroll-x">
+          <div className="vtable-content" style={{ width: TABLE_W, minWidth: TABLE_W }}>
+            <table className="vtable-header-table" style={{ width: TABLE_W, minWidth: TABLE_W }}>
+              <colgroup>
+                {COLUMNS.map(c => <col key={c.key} style={{ width: `${c.width}px` }} />)}
+              </colgroup>
+              <thead>
+                <tr>
+                  {COLUMNS.map((col, idx) => (
+                    <th
+                      key={col.key}
+                      style={columnStyle(col, idx)}
+                      className={[
+                        columnClass(col, idx),
+                        col.align === 'right' && 'th-right',
+                        col.sortable          && 'th-sortable',
+                        sortKey === col.key   && 'th-sorted',
+                      ].filter(Boolean).join(' ')}
+                      onClick={() => col.sortable && handleSort(col.key)}
+                    >
+                      <span className="th-label">{col.label}</span>
+                      {col.sortable && (
+                        <SortIcon col={col.key} sortKey={sortKey} sortDir={sortDir} />
+                      )}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+            </table>
 
-        <VirtualBody
-          rows={sorted}
-          onRowClick={handleRowClick}
-          selectedId={selectedClusterId}
-        />
+            <VirtualBody
+              rows={sorted}
+              onRowClick={handleRowClick}
+              selectedId={selectedClusterId}
+            />
+          </div>
+        </div>
       </div>
     </div>
   )
