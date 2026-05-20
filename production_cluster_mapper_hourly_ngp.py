@@ -101,8 +101,7 @@ DEFAULT_EMBEDDING_DIMENSIONS = 384
 DEFAULT_NGP_INPUT_TABLE = "ngp_call_classification"
 DEFAULT_NGP_FIELDS = (
     "call_type,call_type_sub,outcome,outcome_sub,main_reason,main_reason_sub,"
-    "tags,additional_tags,next_step,descriptive_keywords,coaching_tags,tone,"
-    "call_type_base,outcome_base"
+    "additional_tags,next_step,descriptive_keywords,coaching_tags"
 )
 DEFAULT_NGP_METADATA_COLUMNS = (
     "id,filename,call_id,call_date_time,created_at,batch_id,agent_extension,"
@@ -111,7 +110,8 @@ DEFAULT_NGP_METADATA_COLUMNS = (
 )
 
 STABLE_MAPPING_STATUS = "EXISTING_CLUSTER"
-EMERGING_MAPPING_STATUSES = {"NEW_CLUSTER_CANDIDATE", "TRUE_ANOMALY"}
+KNOWN_ANOMALY_STATUS = "KNOWN_TRUE_ANOMALY"
+EMERGING_MAPPING_STATUSES = {"NEW_CLUSTER_CANDIDATE", "TRUE_ANOMALY", KNOWN_ANOMALY_STATUS}
 CONFIG_ISSUE_STATUS = "NO_CLUSTER_REFERENCE"
 
 FIELD_EMBEDDING_CONTEXT = {
@@ -149,6 +149,7 @@ class ClusterReference:
     cluster_size: Optional[int] = None
     total_occurrences: Optional[int] = None
     medoid_label: Optional[str] = None
+    is_true_anomaly_cluster: bool = False
 
 
 @dataclass(frozen=True)
@@ -162,6 +163,7 @@ class ExactLabelReference:
     cluster_version: str
     cluster_size: Optional[int] = None
     total_occurrences: Optional[int] = None
+    is_true_anomaly_cluster: bool = False
 
 
 @dataclass(frozen=True)
@@ -840,7 +842,7 @@ def ensure_output_schema(
                     created_at,
                     updated_at
                 FROM {output_t}
-                WHERE mapping_status IN ('NEW_CLUSTER_CANDIDATE', 'TRUE_ANOMALY');
+                WHERE mapping_status IN ('NEW_CLUSTER_CANDIDATE', 'TRUE_ANOMALY', 'KNOWN_TRUE_ANOMALY');
                 """
             )
             cur.execute(
@@ -942,8 +944,10 @@ def load_active_clusters(
     fields: Sequence[str],
     default_existing_threshold: float,
     cluster_version: Optional[str],
+    include_anomaly_clusters: bool = False,
 ) -> Dict[str, List[ClusterReference]]:
     cluster_t = safe_pg_qualified_name(cluster_table)
+    anomaly_filter = "TRUE" if include_anomaly_clusters else "FALSE"
 
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         params: List[Any] = [list(fields)]
@@ -957,14 +961,15 @@ def load_active_clusters(
             SELECT
                 c.field_name,
                 c.cluster_id,
-                n.display_name AS cluster_name,
-                n.display_name AS display_name,
+                COALESCE(NULLIF(n.display_name, ''), NULLIF(c.display_name, ''), c.cluster_id) AS cluster_name,
+                COALESCE(NULLIF(n.display_name, ''), NULLIF(c.display_name, ''), c.cluster_id) AS display_name,
                 c.centroid_embedding,
                 COALESCE(c.cluster_version, 'v1') AS cluster_version,
                 c.similarity_threshold,
                 c.cluster_size,
                 c.total_occurrences,
-                c.medoid_label
+                c.medoid_label,
+                COALESCE(c.is_true_anomaly_cluster, FALSE) AS is_true_anomaly_cluster
             FROM {cluster_t} c
             LEFT JOIN taxonomy_cluster_names n
                 ON c.field_name = n.field_name
@@ -972,7 +977,7 @@ def load_active_clusters(
                 AND c.cluster_version = n.cluster_version
                 AND c.cluster_id = n.cluster_id
             WHERE COALESCE(c.active, TRUE) = TRUE
-              AND COALESCE(c.is_true_anomaly_cluster, FALSE) = FALSE
+              AND COALESCE(c.is_true_anomaly_cluster, FALSE) = {anomaly_filter}
               AND c.field_name = ANY(%s)
               AND c.centroid_embedding IS NOT NULL
               {version_filter}
@@ -1008,6 +1013,7 @@ def load_active_clusters(
             cluster_size=row.get("cluster_size"),
             total_occurrences=row.get("total_occurrences"),
             medoid_label=row.get("medoid_label"),
+            is_true_anomaly_cluster=bool(row.get("is_true_anomaly_cluster")),
         )
         by_field.setdefault(ref.field_name, []).append(ref)
 
@@ -1020,6 +1026,7 @@ def load_exact_label_map(
     label_map_table: str,
     fields: Sequence[str],
     cluster_version: Optional[str],
+    include_anomaly_labels: bool = False,
 ) -> Dict[Tuple[str, str], ExactLabelReference]:
     label_map_t = safe_pg_qualified_name(label_map_table)
 
@@ -1029,6 +1036,11 @@ def load_exact_label_map(
         version_filter = "AND COALESCE(m.cluster_version, 'v1') = %s"
         params.append(cluster_version)
 
+    if include_anomaly_labels:
+        anomaly_filter = "AND (COALESCE(c.is_true_anomaly_cluster, FALSE) = TRUE OR COALESCE(m.final_is_true_anomaly, FALSE) = TRUE)"
+    else:
+        anomaly_filter = "AND COALESCE(c.is_true_anomaly_cluster, FALSE) = FALSE AND COALESCE(m.final_is_true_anomaly, FALSE) = FALSE"
+
     sql = f"""
         SELECT
             m.field_name,
@@ -1036,10 +1048,11 @@ def load_exact_label_map(
             m.raw_label,
             m.final_cluster_id,
             COALESCE(m.cluster_version, c.cluster_version, 'v1') AS cluster_version,
-            n.display_name,
-            n.display_name AS cluster_name,
+            COALESCE(NULLIF(n.display_name, ''), NULLIF(c.display_name, ''), c.cluster_id) AS display_name,
+            COALESCE(NULLIF(n.display_name, ''), NULLIF(c.display_name, ''), c.cluster_id) AS cluster_name,
             c.cluster_size,
             c.total_occurrences,
+            COALESCE(c.is_true_anomaly_cluster, FALSE) AS is_true_anomaly_cluster,
             COALESCE(m.value_count, 0) AS value_count
         FROM {label_map_t} m
         JOIN taxonomy_clusters c
@@ -1047,7 +1060,6 @@ def load_exact_label_map(
          AND c.cluster_id = m.final_cluster_id
          AND COALESCE(c.cluster_version, 'v1') = COALESCE(m.cluster_version, 'v1')
          AND COALESCE(c.active, TRUE) = TRUE
-         AND COALESCE(c.is_true_anomaly_cluster, FALSE) = FALSE
         LEFT JOIN taxonomy_cluster_names n
           ON n.field_name = c.field_name
          AND n.run_id = c.run_id
@@ -1057,7 +1069,7 @@ def load_exact_label_map(
           AND m.normalized_label IS NOT NULL
           AND m.normalized_label <> ''
           AND m.final_cluster_id IS NOT NULL
-          AND COALESCE(m.final_is_true_anomaly, FALSE) = FALSE
+          {anomaly_filter}
           {version_filter}
         ORDER BY m.field_name, m.normalized_label, COALESCE(m.value_count, 0) DESC;
     """
@@ -1081,6 +1093,7 @@ def load_exact_label_map(
                 cluster_version=row.get("cluster_version") or "v1",
                 cluster_size=row.get("cluster_size"),
                 total_occurrences=row.get("total_occurrences"),
+                is_true_anomaly_cluster=bool(row.get("is_true_anomaly_cluster")),
             )
 
     return exact
@@ -1159,6 +1172,8 @@ def explode_call_rows(
 
         source_created_at = to_utc_datetime(row.get(timestamp_column)) if timestamp_column and timestamp_column in df.columns else None
         classified_at = to_utc_datetime(row.get(classified_at_column)) if classified_at_column and classified_at_column in df.columns else None
+        if classified_at is None:
+            classified_at = source_created_at
         source_metadata = row_metadata(row, metadata_columns)
 
         for field_name in fields:
@@ -1265,6 +1280,9 @@ def result_from_exact_match(
     embedding_model: str,
     text_mode: str,
 ) -> MappingResult:
+    is_anomaly = bool(exact_ref.is_true_anomaly_cluster)
+    mapping_status = KNOWN_ANOMALY_STATUS if is_anomaly else STABLE_MAPPING_STATUS
+    mapping_method = "exact_anomaly_label_map" if is_anomaly else "exact_label_map"
     top_candidates = [
         {
             "cluster_id": exact_ref.cluster_id,
@@ -1275,6 +1293,7 @@ def result_from_exact_match(
             "cluster_size": exact_ref.cluster_size,
             "total_occurrences": exact_ref.total_occurrences,
             "source": "taxonomy_label_cluster_map",
+            "is_true_anomaly_cluster": is_anomaly,
         }
     ]
     return build_result(
@@ -1290,8 +1309,8 @@ def result_from_exact_match(
         similarity_score=1.0,
         existing_cluster_threshold=1.0,
         new_cluster_candidate_threshold=new_cluster_candidate_threshold,
-        mapping_status=STABLE_MAPPING_STATUS,
-        mapping_method="exact_label_map",
+        mapping_status=mapping_status,
+        mapping_method=mapping_method,
         cluster_version=exact_ref.cluster_version,
         top_candidates=top_candidates,
         embedding_model=embedding_model,
@@ -1331,30 +1350,17 @@ def result_no_cluster_reference(
     )
 
 
-def map_embedded_label_to_cluster(
+def _rank_cluster_candidates(
     *,
     item: ExplodedLabel,
     label_embedding: List[float],
-    mapper_run_id: str,
-    mapper_window_start: Optional[datetime],
-    mapper_window_end: Optional[datetime],
     clusters: Sequence[ClusterReference],
-    new_cluster_candidate_threshold: float,
     top_k: int,
     field_existing_thresholds: Dict[str, float],
-    embedding_model: str,
-    text_mode: str,
-) -> MappingResult:
+    source: str,
+) -> tuple[list[dict[str, Any]], Optional[ClusterReference], Optional[float], Optional[float]]:
     if not clusters:
-        return result_no_cluster_reference(
-            item=item,
-            mapper_run_id=mapper_run_id,
-            mapper_window_start=mapper_window_start,
-            mapper_window_end=mapper_window_end,
-            new_cluster_candidate_threshold=new_cluster_candidate_threshold,
-            embedding_model=embedding_model,
-            text_mode=text_mode,
-        )
+        return [], None, None, None
 
     query = np.array(label_embedding, dtype=np.float32)
     centroids = np.vstack([cluster.centroid_embedding for cluster in clusters])
@@ -1380,6 +1386,8 @@ def map_embedded_label_to_cluster(
                 "total_occurrences": cluster.total_occurrences,
                 "medoid_label": cluster.medoid_label,
                 "similarity_threshold": threshold,
+                "is_true_anomaly_cluster": cluster.is_true_anomaly_cluster,
+                "source": source,
             }
         )
 
@@ -1391,25 +1399,114 @@ def map_embedded_label_to_cluster(
         cluster_threshold=best_cluster.similarity_threshold,
         field_threshold_overrides=field_existing_thresholds,
     )
+    return top_candidates, best_cluster, best_score, best_threshold
 
-    if best_score >= best_threshold:
-        status = STABLE_MAPPING_STATUS
-        method = "centroid_similarity"
-        mapped_cluster_id = best_cluster.cluster_id
-        mapped_cluster_name = best_cluster.cluster_name
-        mapped_display_name = best_cluster.display_name
-    elif best_score >= new_cluster_candidate_threshold:
-        status = "NEW_CLUSTER_CANDIDATE"
-        method = "near_existing_below_threshold"
-        mapped_cluster_id = None
-        mapped_cluster_name = None
-        mapped_display_name = None
+
+def map_embedded_label_to_cluster(
+    *,
+    item: ExplodedLabel,
+    label_embedding: List[float],
+    mapper_run_id: str,
+    mapper_window_start: Optional[datetime],
+    mapper_window_end: Optional[datetime],
+    clusters: Sequence[ClusterReference],
+    anomaly_clusters: Sequence[ClusterReference],
+    anomaly_cluster_threshold: float,
+    new_cluster_candidate_threshold: float,
+    top_k: int,
+    field_existing_thresholds: Dict[str, float],
+    embedding_model: str,
+    text_mode: str,
+) -> MappingResult:
+    if not clusters and not anomaly_clusters:
+        return result_no_cluster_reference(
+            item=item,
+            mapper_run_id=mapper_run_id,
+            mapper_window_start=mapper_window_start,
+            mapper_window_end=mapper_window_end,
+            new_cluster_candidate_threshold=new_cluster_candidate_threshold,
+            embedding_model=embedding_model,
+            text_mode=text_mode,
+        )
+
+    standard_candidates, best_cluster, best_score, best_threshold = _rank_cluster_candidates(
+        item=item,
+        label_embedding=label_embedding,
+        clusters=clusters,
+        top_k=top_k,
+        field_existing_thresholds=field_existing_thresholds,
+        source="standard_cluster",
+    )
+
+    if best_cluster is not None and best_score is not None and best_threshold is not None and best_score >= best_threshold:
+        return build_result(
+            item=item,
+            mapper_run_id=mapper_run_id,
+            mapper_window_start=mapper_window_start,
+            mapper_window_end=mapper_window_end,
+            embedding_text_value=embedding_text(item.field_name, item.raw_label, mode=text_mode),
+            label_embedding=label_embedding,
+            mapped_cluster_id=best_cluster.cluster_id,
+            mapped_cluster_name=best_cluster.cluster_name,
+            mapped_display_name=best_cluster.display_name,
+            similarity_score=best_score,
+            existing_cluster_threshold=best_threshold,
+            new_cluster_candidate_threshold=new_cluster_candidate_threshold,
+            mapping_status=STABLE_MAPPING_STATUS,
+            mapping_method="centroid_similarity",
+            cluster_version=best_cluster.cluster_version,
+            top_candidates=standard_candidates,
+            embedding_model=embedding_model,
+            text_mode=text_mode,
+        )
+
+    anomaly_candidates, best_anomaly, best_anomaly_score, _best_anomaly_threshold = _rank_cluster_candidates(
+        item=item,
+        label_embedding=label_embedding,
+        clusters=anomaly_clusters,
+        top_k=top_k,
+        field_existing_thresholds={},
+        source="true_anomaly_cluster",
+    )
+
+    if best_anomaly is not None and best_anomaly_score is not None and best_anomaly_score >= anomaly_cluster_threshold:
+        return build_result(
+            item=item,
+            mapper_run_id=mapper_run_id,
+            mapper_window_start=mapper_window_start,
+            mapper_window_end=mapper_window_end,
+            embedding_text_value=embedding_text(item.field_name, item.raw_label, mode=text_mode),
+            label_embedding=label_embedding,
+            mapped_cluster_id=best_anomaly.cluster_id,
+            mapped_cluster_name=best_anomaly.cluster_name,
+            mapped_display_name=best_anomaly.display_name,
+            similarity_score=best_anomaly_score,
+            existing_cluster_threshold=anomaly_cluster_threshold,
+            new_cluster_candidate_threshold=new_cluster_candidate_threshold,
+            mapping_status=KNOWN_ANOMALY_STATUS,
+            mapping_method="anomaly_centroid_similarity",
+            cluster_version=best_anomaly.cluster_version,
+            top_candidates=anomaly_candidates + standard_candidates,
+            embedding_model=embedding_model,
+            text_mode=text_mode,
+        )
+
+    if best_cluster is not None and best_score is not None and best_threshold is not None:
+        if best_score >= new_cluster_candidate_threshold:
+            status = "NEW_CLUSTER_CANDIDATE"
+            method = "near_existing_below_threshold"
+        else:
+            status = "TRUE_ANOMALY"
+            method = "low_similarity_unresolved"
+        similarity_score = best_score
+        existing_threshold = best_threshold
+        cluster_version = best_cluster.cluster_version
     else:
         status = "TRUE_ANOMALY"
         method = "low_similarity_unresolved"
-        mapped_cluster_id = None
-        mapped_cluster_name = None
-        mapped_display_name = None
+        similarity_score = best_anomaly_score
+        existing_threshold = anomaly_cluster_threshold if best_anomaly_score is not None else None
+        cluster_version = best_anomaly.cluster_version if best_anomaly is not None else None
 
     return build_result(
         item=item,
@@ -1418,16 +1515,16 @@ def map_embedded_label_to_cluster(
         mapper_window_end=mapper_window_end,
         embedding_text_value=embedding_text(item.field_name, item.raw_label, mode=text_mode),
         label_embedding=label_embedding,
-        mapped_cluster_id=mapped_cluster_id,
-        mapped_cluster_name=mapped_cluster_name,
-        mapped_display_name=mapped_display_name,
-        similarity_score=best_score,
-        existing_cluster_threshold=best_threshold,
+        mapped_cluster_id=None,
+        mapped_cluster_name=None,
+        mapped_display_name=None,
+        similarity_score=similarity_score,
+        existing_cluster_threshold=existing_threshold,
         new_cluster_candidate_threshold=new_cluster_candidate_threshold,
         mapping_status=status,
         mapping_method=method,
-        cluster_version=best_cluster.cluster_version,
-        top_candidates=top_candidates,
+        cluster_version=cluster_version,
+        top_candidates=standard_candidates + anomaly_candidates,
         embedding_model=embedding_model,
         text_mode=text_mode,
     )
@@ -1444,12 +1541,15 @@ def run_mapping(
     classified_at_column: Optional[str],
     metadata_columns: Sequence[str],
     exact_label_map: Dict[Tuple[str, str], ExactLabelReference],
+    exact_anomaly_label_map: Dict[Tuple[str, str], ExactLabelReference],
     embedding_provider: EmbeddingProvider,
     clusters_by_field: Dict[str, List[ClusterReference]],
+    anomaly_clusters_by_field: Dict[str, List[ClusterReference]],
     mapper_run_id: str,
     mapper_window_start: Optional[datetime],
     mapper_window_end: Optional[datetime],
     new_cluster_candidate_threshold: float,
+    anomaly_cluster_threshold: float,
     top_k: int,
     embedding_batch_size: int,
     text_mode: str,
@@ -1478,6 +1578,8 @@ def run_mapping(
 
     for item in exploded:
         exact_ref = exact_label_map.get((item.field_name, item.normalized_label))
+        if exact_ref is None:
+            exact_ref = exact_anomaly_label_map.get((item.field_name, item.normalized_label))
         if exact_ref is not None:
             results.append(
                 result_from_exact_match(
@@ -1494,7 +1596,8 @@ def run_mapping(
             continue
 
         clusters = clusters_by_field.get(item.field_name, [])
-        if not clusters:
+        anomaly_clusters = anomaly_clusters_by_field.get(item.field_name, [])
+        if not clusters and not anomaly_clusters:
             results.append(
                 result_no_cluster_reference(
                     item=item,
@@ -1511,7 +1614,8 @@ def run_mapping(
         embedding_items.append(item)
         embedding_texts.append(embedding_text(item.field_name, item.raw_label, mode=text_mode))
 
-    print(f"Exact known-label matches: {sum(1 for r in results if r.mapping_method == 'exact_label_map'):,}")
+    print(f"Exact known standard-label matches: {sum(1 for r in results if r.mapping_method == 'exact_label_map'):,}")
+    print(f"Exact known anomaly-label matches: {sum(1 for r in results if r.mapping_method == 'exact_anomaly_label_map'):,}")
     print(f"Labels requiring embeddings: {len(embedding_items):,}")
     print(f"Embedding text mode: {text_mode}")
 
@@ -1535,6 +1639,8 @@ def run_mapping(
                 mapper_window_start=mapper_window_start,
                 mapper_window_end=mapper_window_end,
                 clusters=clusters_by_field.get(item.field_name, []),
+                anomaly_clusters=anomaly_clusters_by_field.get(item.field_name, []),
+                anomaly_cluster_threshold=anomaly_cluster_threshold,
                 new_cluster_candidate_threshold=new_cluster_candidate_threshold,
                 top_k=top_k,
                 field_existing_thresholds=field_existing_thresholds,
@@ -1841,9 +1947,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-table", default=DEFAULT_OUTPUT_TABLE)
     parser.add_argument("--run-table", default=DEFAULT_RUN_TABLE)
     parser.add_argument("--cluster-version", help="Optional cluster version to use. If omitted, all active versions are eligible.")
-    parser.add_argument("--ensure-schema", action="store_true", help="Create/patch mapper output tables and Iris views.")
+    parser.add_argument("--ensure-schema", action=argparse.BooleanOptionalAction, default=True, help="Create/patch mapper output tables and Iris views. Default: true.")
     parser.add_argument("--skip-iris-views", action="store_true", help="Do not create Iris feed views when --ensure-schema is used.")
-    parser.add_argument("--write-output", action="store_true", help="Upsert mapping results into local PostgreSQL output table.")
+    parser.add_argument("--write-output", action=argparse.BooleanOptionalAction, default=True, help="Upsert mapping results into local PostgreSQL output table. Default: true.")
     parser.add_argument("--preview-csv", help="Optional path to save mapping results as CSV.")
 
     parser.add_argument("--disable-exact-label-map", action="store_true", help="Disable fast exact lookup from taxonomy_label_cluster_map.")
@@ -1853,6 +1959,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional comma-separated per-field existing-cluster thresholds, e.g. next_step=0.75,coaching_tags=0.82",
     )
     parser.add_argument("--new-cluster-candidate-threshold", type=float, default=DEFAULT_NEW_CLUSTER_CANDIDATE_THRESHOLD)
+    parser.add_argument("--anomaly-cluster-threshold", type=float, default=0.88, help="Similarity threshold for mapping to existing true anomaly clusters after standard mapping fails.")
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     parser.add_argument("--embedding-batch-size", type=int, default=128)
     parser.add_argument(
@@ -1874,7 +1981,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--device",
-        default="auto",
+        default="openvino-gpu",
         help="Embedding device: auto, cpu, cuda, cuda:N, npu, openvino-gpu, or openvino-cpu.",
     )
     parser.add_argument("--embedding-dimensions", type=int, default=DEFAULT_EMBEDDING_DIMENSIONS)
@@ -1964,21 +2071,41 @@ def main() -> int:
             fields=fields,
             default_existing_threshold=args.existing_cluster_threshold,
             cluster_version=args.cluster_version,
+            include_anomaly_clusters=False,
+        )
+        anomaly_clusters_by_field = load_active_clusters(
+            local_conn,
+            cluster_table=args.cluster_table,
+            fields=fields,
+            default_existing_threshold=args.anomaly_cluster_threshold,
+            cluster_version=args.cluster_version,
+            include_anomaly_clusters=True,
         )
         for field in fields:
             print(f"Loaded active approved clusters for {field}: {len(clusters_by_field.get(field, [])):,}")
+            print(f"Loaded active true anomaly clusters for {field}: {len(anomaly_clusters_by_field.get(field, [])):,}")
 
         exact_label_map: Dict[Tuple[str, str], ExactLabelReference] = {}
+        exact_anomaly_label_map: Dict[Tuple[str, str], ExactLabelReference] = {}
         if not args.disable_exact_label_map:
             exact_label_map = load_exact_label_map(
                 local_conn,
                 label_map_table=args.label_map_table,
                 fields=fields,
                 cluster_version=args.cluster_version,
+                include_anomaly_labels=False,
+            )
+            exact_anomaly_label_map = load_exact_label_map(
+                local_conn,
+                label_map_table=args.label_map_table,
+                fields=fields,
+                cluster_version=args.cluster_version,
+                include_anomaly_labels=True,
             )
             print(f"Loaded exact approved label mappings: {len(exact_label_map):,}")
+            print(f"Loaded exact true anomaly label mappings: {len(exact_anomaly_label_map):,}")
         else:
-            print("Exact approved label map lookup: disabled")
+            print("Exact approved/anomaly label map lookup: disabled")
 
         embedding_provider = build_embedding_provider(args)
         results, exploded_label_count = run_mapping(
@@ -1991,12 +2118,15 @@ def main() -> int:
             classified_at_column=args.classified_at_column,
             metadata_columns=metadata_columns,
             exact_label_map=exact_label_map,
+            exact_anomaly_label_map=exact_anomaly_label_map,
             embedding_provider=embedding_provider,
             clusters_by_field=clusters_by_field,
+            anomaly_clusters_by_field=anomaly_clusters_by_field,
             mapper_run_id=mapper_run_id,
             mapper_window_start=mapper_window_start,
             mapper_window_end=mapper_window_end,
             new_cluster_candidate_threshold=args.new_cluster_candidate_threshold,
+            anomaly_cluster_threshold=args.anomaly_cluster_threshold,
             top_k=args.top_k,
             embedding_batch_size=args.embedding_batch_size,
             text_mode=args.text_mode,
@@ -2034,6 +2164,7 @@ def main() -> int:
                 "existing_cluster_threshold": args.existing_cluster_threshold,
                 "field_existing_thresholds": field_existing_thresholds,
                 "new_cluster_candidate_threshold": args.new_cluster_candidate_threshold,
+                "anomaly_cluster_threshold": args.anomaly_cluster_threshold,
                 "top_k": args.top_k,
                 "text_mode": args.text_mode,
                 "embedding_provider": args.embedding_provider,

@@ -1227,19 +1227,32 @@ def deterministic_safe_map_check(group: UnresolvedGroup, top_candidate: dict[str
 def load_active_anomaly_clusters(conn, args: argparse.Namespace, field_name: str) -> list[dict[str, Any]]:
     cluster_t = safe_pg_qualified_name(args.cluster_table)
     cols = get_columns(conn, args.cluster_table)
-    select_cols = ["field_name", "cluster_id", "centroid_embedding"]
-    for c in ["cluster_version", "run_id", "display_name", "cluster_name", "medoid_label", "total_occurrences", "cluster_size", "promotion_status"]:
+
+    select_exprs = [
+        "c.field_name",
+        "c.cluster_id",
+        "c.centroid_embedding",
+        "COALESCE(NULLIF(n.display_name, ''), NULLIF(c.display_name, ''), c.cluster_id) AS display_name",
+    ]
+    for c in ["cluster_version", "run_id", "medoid_label", "total_occurrences", "cluster_size", "promotion_status"]:
         if c in cols:
-            select_cols.append(c)
+            select_exprs.append(f"c.{safe_pg_identifier(c)}")
+
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             f"""
-            SELECT {', '.join(safe_pg_identifier(c) for c in select_cols)}
-            FROM {cluster_t}
-            WHERE field_name = %s
-              AND COALESCE(active, TRUE) = TRUE
-              AND COALESCE(is_true_anomaly_cluster, FALSE) = TRUE
-              AND centroid_embedding IS NOT NULL
+            SELECT {', '.join(select_exprs)}
+            FROM {cluster_t} c
+            LEFT JOIN taxonomy_cluster_names n
+              ON n.field_name = c.field_name
+             AND n.cluster_id = c.cluster_id
+             AND (n.run_id = c.run_id OR n.run_id IS NULL OR c.run_id IS NULL)
+             AND (n.cluster_version = c.cluster_version OR n.cluster_version IS NULL OR c.cluster_version IS NULL)
+            WHERE c.field_name = %s
+              AND COALESCE(c.active, TRUE) = TRUE
+              AND COALESCE(c.is_true_anomaly_cluster, FALSE) = TRUE
+              AND c.centroid_embedding IS NOT NULL
+            ORDER BY COALESCE(c.updated_at, c.created_at, NOW()) DESC NULLS LAST
             """,
             (field_name,),
         )
@@ -1266,17 +1279,28 @@ def nearest_anomaly_cluster(conn, args: argparse.Namespace, group: UnresolvedGro
 def get_cluster_identity(conn, args: argparse.Namespace, field_name: str, cluster_id: str) -> Optional[dict[str, Any]]:
     cluster_t = safe_pg_qualified_name(args.cluster_table)
     cols = get_columns(conn, args.cluster_table)
-    select_cols = ["field_name", "cluster_id"]
-    for c in ["cluster_version", "run_id", "display_name", "cluster_name", "is_true_anomaly_cluster", "active"]:
+
+    select_exprs = [
+        "c.field_name",
+        "c.cluster_id",
+        "COALESCE(NULLIF(n.display_name, ''), NULLIF(c.display_name, ''), c.cluster_id) AS display_name",
+    ]
+    for c in ["cluster_version", "run_id", "is_true_anomaly_cluster", "active", "promotion_status", "total_occurrences", "cluster_size"]:
         if c in cols:
-            select_cols.append(c)
+            select_exprs.append(f"c.{safe_pg_identifier(c)}")
+
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             f"""
-            SELECT {', '.join(safe_pg_identifier(c) for c in select_cols)}
-            FROM {cluster_t}
-            WHERE field_name = %s AND cluster_id = %s
-            ORDER BY COALESCE(active, TRUE) DESC, COALESCE(updated_at, created_at, NOW()) DESC NULLS LAST
+            SELECT {', '.join(select_exprs)}
+            FROM {cluster_t} c
+            LEFT JOIN taxonomy_cluster_names n
+              ON n.field_name = c.field_name
+             AND n.cluster_id = c.cluster_id
+             AND (n.run_id = c.run_id OR n.run_id IS NULL OR c.run_id IS NULL)
+             AND (n.cluster_version = c.cluster_version OR n.cluster_version IS NULL OR c.cluster_version IS NULL)
+            WHERE c.field_name = %s AND c.cluster_id = %s
+            ORDER BY COALESCE(c.active, TRUE) DESC, COALESCE(c.updated_at, c.created_at, NOW()) DESC NULLS LAST
             LIMIT 1
             """,
             (field_name, cluster_id),
@@ -1688,7 +1712,20 @@ def create_or_update_anomaly_cluster(conn, args: argparse.Namespace, group: Unre
                     naming_method="weekly_deterministic_anomaly_label",
                     naming_reason="Anomaly cluster name generated from normalized unresolved label.",
                 )
-                return cluster_id, display_name, {"promotion_status": promotion_status, "promotion_reason": threshold_reason, "counters": counters}
+                mapper_rows_updated = update_mapper_output_to_anomaly_cluster(
+                    conn,
+                    args,
+                    group,
+                    cluster_id=cluster_id,
+                    display_name=display_name,
+                    mapping_method="weekly_updated_anomaly_cluster",
+                )
+                return cluster_id, display_name, {
+                    "promotion_status": promotion_status,
+                    "promotion_reason": threshold_reason,
+                    "counters": counters,
+                    "mapper_rows_updated": mapper_rows_updated,
+                }
 
     insert_cols = [c for c in base_values.keys() if c in cluster_cols]
     insert_values = [base_values[c] for c in insert_cols]
@@ -1710,7 +1747,20 @@ def create_or_update_anomaly_cluster(conn, args: argparse.Namespace, group: Unre
         naming_method="weekly_deterministic_anomaly_label",
         naming_reason="Anomaly cluster name generated from normalized unresolved label.",
     )
-    return cluster_id, display_name, {"promotion_status": promotion_status, "promotion_reason": threshold_reason, "counters": counters}
+    mapper_rows_updated = update_mapper_output_to_anomaly_cluster(
+        conn,
+        args,
+        group,
+        cluster_id=cluster_id,
+        display_name=display_name,
+        mapping_method="weekly_created_anomaly_cluster",
+    )
+    return cluster_id, display_name, {
+        "promotion_status": promotion_status,
+        "promotion_reason": threshold_reason,
+        "counters": counters,
+        "mapper_rows_updated": mapper_rows_updated,
+    }
 
 
 def map_to_existing_cluster(conn, args: argparse.Namespace, group: UnresolvedGroup, target: dict[str, Any]) -> tuple[str, str]:
@@ -1749,6 +1799,39 @@ def map_to_existing_cluster(conn, args: argparse.Namespace, group: UnresolvedGro
             )
     return target_cluster_id, target_display_name
 
+
+
+
+def update_mapper_output_to_anomaly_cluster(
+    conn,
+    args: argparse.Namespace,
+    group: UnresolvedGroup,
+    *,
+    cluster_id: str,
+    display_name: str,
+    mapping_method: str = "weekly_resolved_to_anomaly_cluster",
+) -> int:
+    if not args.update_mapper_output:
+        return 0
+
+    output_t = safe_pg_qualified_name(args.output_table)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {output_t}
+            SET mapped_cluster_id = %s,
+                mapped_cluster_name = %s,
+                mapped_display_name = %s,
+                mapping_status = 'KNOWN_TRUE_ANOMALY',
+                mapping_method = %s,
+                updated_at = NOW()
+            WHERE field_name = %s
+              AND normalized_label = %s
+              AND mapping_status IN ('TRUE_ANOMALY', 'NEW_CLUSTER_CANDIDATE')
+            """,
+            (cluster_id, display_name, display_name, mapping_method, group.field_name, group.normalized_label),
+        )
+        return int(cur.rowcount or 0)
 
 def weekly_unresolved_label_resolver(conn, args: argparse.Namespace, weekly_run_id: str, window_start: datetime, window_end: datetime) -> dict[str, Any]:
     groups = load_unresolved_groups(conn, args, window_start, window_end)
@@ -1975,7 +2058,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--safe-map-min-top-margin", type=float, default=DEFAULT_SAFE_MAP_MIN_TOP_MARGIN)
     parser.add_argument("--safe-map-stability-ratio", type=float, default=DEFAULT_SAFE_MAP_STABILITY_RATIO)
     parser.add_argument("--anomaly-attach-threshold", type=float, default=DEFAULT_ANOMALY_ATTACH_THRESHOLD)
-    parser.add_argument("--update-mapper-output", action="store_true", help="When safe-mapping to existing cluster, also update mapper output rows.")
+    parser.add_argument("--update-mapper-output", action=argparse.BooleanOptionalAction, default=True, help="When resolving labels, also update mapper output rows. Default: true.")
 
     return parser.parse_args()
 
