@@ -12,16 +12,22 @@ export function seededRand(seed) {
   return x - Math.floor(x)
 }
 
+const ADDITIONAL_TAGS_FIELD_COLOR = '#2ff3e0'
+
 const FIELD_PALETTE = [
-  '#00d4ff', '#a855f7', '#10b981', '#f97316',
+  '#60a5fa', '#a855f7', '#10b981', '#f97316',
   '#e879f9', '#3b82f6', '#f59e0b', '#06b6d4',
   '#8b5cf6', '#ec4899', '#14b8a6', '#84cc16',
 ]
+const FIXED_FIELD_COLORS = {
+  additional_tags: ADDITIONAL_TAGS_FIELD_COLOR,
+}
 const _fieldColorCache = {}
 let _fieldIndex = 0
 
 export function getFieldColor(fieldName) {
   if (!fieldName) return '#94a3b8'
+  if (FIXED_FIELD_COLORS[fieldName]) return FIXED_FIELD_COLORS[fieldName]
   if (_fieldColorCache[fieldName]) return _fieldColorCache[fieldName]
   const color = FIELD_PALETTE[_fieldIndex % FIELD_PALETTE.length]
   _fieldColorCache[fieldName] = color

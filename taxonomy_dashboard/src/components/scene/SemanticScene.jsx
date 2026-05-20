@@ -18,6 +18,14 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))
 }
 
+function standardPaintRank(cluster) {
+  return cluster?.is_true_anomaly_cluster ? 0 : 1
+}
+
+function standardClustersOnTop(a, b) {
+  return standardPaintRank(a) - standardPaintRank(b)
+}
+
 function shortLabel(value, max = 28) {
   const text = String(value || '').trim()
   return text.length > max ? text.slice(0, max) + '…' : text
@@ -160,7 +168,11 @@ function draw2D(ctx, cls, w, h, tx, ty, sc, selId, hovId, showL) {
   ctx.globalAlpha = 1
 
   // Main clusters
-  for (const c of cls) {
+  // Draw anomaly clusters first and standard clusters last. This keeps the
+  // fixed field colour visible when a field has many anomaly points on top
+  // of standard clusters, especially additional_tags.
+  const paintClusters = cls.length > 1000 ? [...cls].sort(standardClustersOnTop) : cls
+  for (const c of paintClusters) {
     const isSel = selId !== null && selId === String(c.id)
     const isHov = hovId !== null && hovId === String(c.id)
     if (isSel || isHov) { focusC = c; continue }
@@ -337,7 +349,12 @@ function draw3D(ctx, cls, w, h, rotX, rotY, fov, zoom, panX, panY, selId, hovId,
     const baseR = Math.min(rawBaseR, cls.length > 1200 ? 7 : 10)
     const r = baseR * (isSel ? 1.6 : isHov ? 1.25 : 1.0)
     return { c, px: w / 2 + panX + sx, py: h / 2 + panY + sy, r, z, isSel, isHov }
-  }).sort((a, b) => b.z - a.z)  // painter's: far first
+  }).sort((a, b) => {
+    const ar = standardPaintRank(a.c)
+    const br = standardPaintRank(b.c)
+    if (ar !== br) return ar - br
+    return b.z - a.z
+  })  // anomaly first, then standard clusters; far first within each type
 
   const maxZ = 80, minZ = -80
   let focusItem = null

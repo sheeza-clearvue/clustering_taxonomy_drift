@@ -7,6 +7,9 @@ import { getFieldColor } from '../components/scene/sceneUtils.js'
 
 const SemanticScene = lazy(() => import('../components/scene/SemanticScene.jsx'))
 
+const OBSERVATORY_FIELD_LIMIT = 8000
+const OBSERVATORY_GLOBAL_LIMIT = 8000
+
 // ── Mini sparkline ─────────────────────────────────────────────────────────────
 function Sparkline({ seed = 2.1, color = '#00d4ff', width = 78, height = 30 }) {
   const pts = Array.from({ length: 10 }, (_, i) => {
@@ -239,21 +242,21 @@ export default function Observatory() {
         ? fieldsRes.value : []
 
       if (fieldList.length === 0) {
-        return fetch('/api/clusters?limit=8000&projection=umap').then(r => r.json()).then(data => {
+        return fetch(`/api/clusters?limit=${OBSERVATORY_GLOBAL_LIMIT}&projection=umap`).then(r => r.json()).then(data => {
           if (Array.isArray(data)) setClusters(data)
         })
       }
 
       return Promise.allSettled(
         fieldList.map(f =>
-          fetch(`/api/clusters?field_name=${encodeURIComponent(f)}&limit=8000&projection=umap`).then(r => r.json())
+          fetch(`/api/clusters?field_name=${encodeURIComponent(f)}&limit=${OBSERVATORY_FIELD_LIMIT}&projection=umap`).then(r => r.json())
         )
       ).then(results => {
         const seen = new Set(), merged = [], stats = {}
         results.forEach((r, idx) => {
           if (r.status !== 'fulfilled' || !Array.isArray(r.value)) return
           const field = fieldList[idx], data = r.value
-          stats[field] = { rendered: data.length, capped: data.length >= 2000 }
+          stats[field] = { rendered: data.length, capped: data.length >= OBSERVATORY_FIELD_LIMIT }
           data.forEach(c => {
             const key = c.id ?? c.cluster_id
             if (!seen.has(key)) { seen.add(key); merged.push(c) }

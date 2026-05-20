@@ -132,7 +132,11 @@ async function buildClusterQuery({ filters = {}, anomalyOnly = false }) {
   }
 
   const whereClause = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
-  const limit  = Math.min(Math.max(parseInt(filters.limit)  || 50, 1), 5000);
+  // Observatory can request larger per-field samples. Keep a safety ceiling,
+  // but do not silently force 8k requests back down to 5k.
+  const requestedLimit = parseInt(filters.limit) || 50;
+  const maxClusterLimit = Math.max(parseInt(process.env.MAX_CLUSTER_API_LIMIT || '20000', 10) || 20000, 5000);
+  const limit  = Math.min(Math.max(requestedLimit, 1), maxClusterLimit);
   const offset = Math.max(parseInt(filters.offset) || 0, 0);
   const projectionMethod = ['umap', 'tsne', 'pca'].includes(String(filters.projection || '').toLowerCase())
     ? String(filters.projection).toLowerCase()
@@ -210,7 +214,11 @@ async function buildClusterQuery({ filters = {}, anomalyOnly = false }) {
     ) lm_sub ON ${lmJoinOn}
     ${projectionJoin}
     ${whereClause}
-    ORDER BY tc.field_name, tc.cluster_id
+    ORDER BY
+      CASE WHEN COALESCE(${aCol || 'false'}, false) THEN 1 ELSE 0 END,
+      COALESCE(tc.cluster_size, 0) DESC,
+      tc.field_name,
+      tc.cluster_id
     LIMIT ${limitParam} OFFSET ${offsetParam}
   `;
 
