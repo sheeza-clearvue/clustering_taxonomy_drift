@@ -1143,3 +1143,10 @@ input, select { font: inherit; color: inherit; background: none }
   flex: 1;
   min-height: 0;
 }
+
+/* Table horizontal scroll fix: headers and cells now move as one grid.
+   First columns are no longer frozen, so Name/Field/ID cannot overlap other headers while sliding right. */
+.vtable-header-table th,
+.vtable-inner td {
+  position: static;
+}

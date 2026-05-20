@@ -8,8 +8,8 @@ const ROW_H   = 40
 const OVERSCAN = 8
 
 const COLUMNS = [
-  { key: 'field_name',              label: 'Field',       sortable: true,  width: 126, sticky: true },
-  { key: 'display_name',            label: 'Name',        sortable: true,  width: 230, sticky: true },
+  { key: 'field_name',              label: 'Field',       sortable: true,  width: 126 },
+  { key: 'display_name',            label: 'Name',        sortable: true,  width: 230 },
   { key: 'cluster_size',            label: 'Size',        sortable: true,  width: 78,  align: 'right' },
   { key: 'total_occurrences',       label: 'Occ.',        sortable: true,  width: 86,  align: 'right' },
   { key: 'label_count',             label: 'Labels',      sortable: true,  width: 76,  align: 'right' },
