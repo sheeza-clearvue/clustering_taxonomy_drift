@@ -402,12 +402,7 @@ export default function RightInspector({ clusterId }) {
         <div className="flex-1 overflow-y-auto px-3 py-3" style={{ scrollbarWidth: 'thin', scrollbarColor: '#1a2d4a transparent' }}>
           {tab === 'overview' && (
             <>
-              {namingReason && (
-                <div className="mb-4 pl-3 py-2 text-[11px] italic leading-relaxed" style={{ color: '#94a3b8', borderLeft: `2px solid ${fc}`, background: 'rgba(255,255,255,0.018)' }}>
-                  “{namingReason}”
-                </div>
-              )}
-
+              
               <div className="grid grid-cols-3 gap-2 mb-4">
                 <StatCard value={clusterSize} label="Cluster Size" color="#60a5fa" />
                 <StatCard value={distinctLabelCount || tableLabels.length} label="Distinct Labels" color="#e5e7eb" />
@@ -420,15 +415,6 @@ export default function RightInspector({ clusterId }) {
                   <button onClick={copyLabel} className="text-dust hover:text-cyan transition-colors flex-shrink-0" title="Copy label">
                     {copiedLabel ? <CheckCheck size={13} style={{ color: '#10b981' }} /> : <Copy size={13} />}
                   </button>
-                </div>
-              </Section>
-
-              <Section title="Quality Signals">
-                <div className="flex flex-col gap-2">
-                  <QualitySignal label={hasName ? 'Named' : 'Missing display name'} good={hasName} />
-                  <QualitySignal label={hasCentroid ? 'Centroid present' : 'Centroid missing'} good={hasCentroid} />
-                  <QualitySignal label={hasMedoid ? 'Medoid present' : 'Medoid missing'} good={hasMedoid} />
-                  <QualitySignal label={isAnomaly ? 'True anomaly cluster' : 'Not anomalous'} good={!isAnomaly} />
                 </div>
               </Section>
 
@@ -454,12 +440,7 @@ export default function RightInspector({ clusterId }) {
                 <MiniCentroidMedoid medoidSimilarity={medoidSimilarity} medoidLabel={medoidLabel} fc={fc} />
               </Section>
 
-              <Section title={`Label Distribution · ${formatNumber(distinctLabelCount || tableLabels.length)}`}>
-                <LabelDistribution rows={tableLabels} fc={fc} limit={28} />
-                <button onClick={() => { setShowAllLabels(true); setTab('members') }} className="mt-4 w-full rounded-lg py-2 text-[11px] text-star transition-colors" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(71,85,105,0.45)' }}>
-                  View All {(clusterSize || tableLabels.length || 0).toLocaleString()} Labels
-                </button>
-              </Section>
+             
             </>
           )}
 
@@ -478,6 +459,15 @@ export default function RightInspector({ clusterId }) {
 
           {tab === 'quality' && (
             <>
+              <Section title="Quality Signals">
+                <div className="flex flex-col gap-2">
+                  <QualitySignal label={hasName ? 'Named' : 'Missing display name'} good={hasName} />
+                  <QualitySignal label={hasCentroid ? 'Centroid present' : 'Centroid missing'} good={hasCentroid} />
+                  <QualitySignal label={hasMedoid ? 'Medoid present' : 'Medoid missing'} good={hasMedoid} />
+                  <QualitySignal label={isAnomaly ? 'True anomaly cluster' : 'Not anomalous'} good={!isAnomaly} />
+                </div>
+              </Section>
+
               <Section title="Embedding Quality">
                 <MetricBar label="Medoid similarity to centroid" value={medoidSimilarity} color="#22c55e" />
                 <MetricBar label="Cluster tightness" value={tightness} color="#22c55e" />

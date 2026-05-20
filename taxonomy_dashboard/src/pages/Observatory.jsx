@@ -239,14 +239,14 @@ export default function Observatory() {
         ? fieldsRes.value : []
 
       if (fieldList.length === 0) {
-        return fetch('/api/clusters?limit=2000&projection=umap').then(r => r.json()).then(data => {
+        return fetch('/api/clusters?limit=8000&projection=umap').then(r => r.json()).then(data => {
           if (Array.isArray(data)) setClusters(data)
         })
       }
 
       return Promise.allSettled(
         fieldList.map(f =>
-          fetch(`/api/clusters?field_name=${encodeURIComponent(f)}&limit=2000&projection=umap`).then(r => r.json())
+          fetch(`/api/clusters?field_name=${encodeURIComponent(f)}&limit=8000&projection=umap`).then(r => r.json())
         )
       ).then(results => {
         const seen = new Set(), merged = [], stats = {}
@@ -548,10 +548,7 @@ export default function Observatory() {
                   }}
                 />
               </div>
-              <button className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
-                style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', color: '#94a3b8', backdropFilter: 'blur(14px)' }}>
-                <SlidersHorizontal size={12} />
-              </button>
+
               <button onClick={resetScene} className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
                 style={{ background: 'rgba(3,8,15,0.82)', border: '1px solid rgba(71,85,105,0.42)', color: '#94a3b8', backdropFilter: 'blur(14px)' }}>
                 <RotateCcw size={12} />
