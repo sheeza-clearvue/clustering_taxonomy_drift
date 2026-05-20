@@ -110,13 +110,28 @@ function DataRow({ label, value, color = '#94a3b8', chip = false }) {
   )
 }
 
-function StatusPill({ status }) {
-  const color = status === 'Healthy' ? '#10b981' : status === 'Watch' ? '#f97316' : '#ef4444'
+function PriorityPill({ priority }) {
+  const color = priority === 'Stable' ? '#10b981' : priority === 'Monitor' ? '#f97316' : '#ef4444'
   return (
     <span className="text-[9.5px] px-2 py-0.5 rounded-md font-semibold" style={{ color, background: `${color}16`, border: `1px solid ${color}30` }}>
-      {status}
+      {priority}
     </span>
   )
+}
+
+function fieldReviewReason(row) {
+  const anomalyRate = Number(row?.anomaly_rate ?? row?.field_anomaly_rate ?? 0)
+  const medoidRate = Number(row?.medoid_weak_rate ?? 0)
+  const namedRate = row?.named_rate == null ? 1 : Number(row.named_rate)
+  const field = row?.field_name || 'field'
+
+  if (namedRate < 1) return 'Naming coverage is incomplete; finish display-name cleanup before publishing.'
+  if (medoidRate > 0) return 'Weak medoid examples found; check whether representative labels are good cluster anchors.'
+  if (field === 'additional_tags' && anomalyRate >= 0.4) return 'High unique-tag pressure; review which business-intelligence tags should remain unique versus recoverable.'
+  if (field === 'coaching_tags' && anomalyRate >= 0.4) return 'Small field with high coaching-label variety; review whether new skills should become approved clusters.'
+  if (anomalyRate >= 0.4) return 'High unresolved-label pressure; review recovery and merge opportunities for this field.'
+  if (anomalyRate >= 0.18) return 'Monitor new variants and unresolved labels before the next cleanup cycle.'
+  return 'No immediate cleanup signal from current health metrics.'
 }
 
 function FieldBarRow({ field, left, right, percent, color }) {
@@ -196,7 +211,7 @@ function SectionNav() {
 function FieldHealthMatrix({ rows }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1040px] text-left text-[10.5px]">
+      <table className="w-full min-w-[1260px] text-left text-[10.5px]">
         <thead style={{ background: 'rgba(255,255,255,0.025)', color: '#64748b' }}>
           <tr>
             <th className="px-3 py-2 font-semibold">Field</th>
@@ -208,7 +223,8 @@ function FieldHealthMatrix({ rows }) {
             <th className="px-3 py-2 font-semibold text-right">Recovery</th>
             <th className="px-3 py-2 font-semibold text-right">Medoid Risk</th>
             <th className="px-3 py-2 font-semibold text-right">Run</th>
-            <th className="px-3 py-2 font-semibold text-right">Status</th>
+            <th className="px-3 py-2 font-semibold text-right">Priority</th>
+            <th className="px-3 py-2 font-semibold">Review Reason</th>
           </tr>
         </thead>
         <tbody>
@@ -223,7 +239,8 @@ function FieldHealthMatrix({ rows }) {
               <td className="px-3 py-2 text-right text-dust font-mono">{r.recovery_rate != null ? pct(r.recovery_rate, 1) : '—'}</td>
               <td className="px-3 py-2 text-right text-dust font-mono">{r.medoid_weak_rate != null ? pct(r.medoid_weak_rate, 1) : '—'}</td>
               <td className="px-3 py-2 text-right text-dust font-mono truncate max-w-[130px]">{r.run_id || '—'}</td>
-              <td className="px-3 py-2 text-right"><StatusPill status={r.status} /></td>
+              <td className="px-3 py-2 text-right"><PriorityPill priority={r.status} /></td>
+              <td className="px-3 py-2 text-dust min-w-[260px]">{r.review_reason || fieldReviewReason(r)}</td>
             </tr>
           ))}
         </tbody>
@@ -491,16 +508,20 @@ export default function OverviewPage() {
       const nr = row.named_rate
       const mr = row.medoid_weak_rate
       const reviewScore = (ar || 0) * 1.4 + (nr != null ? Math.max(0, 1 - nr) : 0) + (mr || 0) * 0.7
-      const status = reviewScore > 0.45 ? 'Review' : reviewScore > 0.18 ? 'Watch' : 'Healthy'
-      return {
+      const status = reviewScore > 0.45 ? 'High' : reviewScore > 0.18 ? 'Monitor' : 'Stable'
+      const enriched = {
         ...row,
         anomaly_rate: ar,
         named_rate: nr,
         medoid_weak_rate: mr,
         status,
       }
+      return {
+        ...enriched,
+        review_reason: fieldReviewReason(enriched),
+      }
     }).sort((a, b) => {
-      const order = { Review: 0, Watch: 1, Healthy: 2 }
+      const order = { High: 0, Monitor: 1, Stable: 2 }
       return (order[a.status] - order[b.status]) || n(b.raw_labels) - n(a.raw_labels)
     })
   }, [fields, fieldHealth, anomalyByField, medoidByField, recoveryByField, runRows])

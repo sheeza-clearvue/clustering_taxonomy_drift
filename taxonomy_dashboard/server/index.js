@@ -372,7 +372,17 @@ app.get('/api/cluster/:id', async (req, res) => {
     `, [id]);
 
     if (!rows.length) return res.status(404).json({ error: 'Cluster not found' });
-    res.json(rows[0]);
+    const clusterRow = rows[0];
+    try {
+      const rid = clusterRow.run_id || clusterRow.cluster_version || '';
+      const payload = await runMetadataPayload(rid, { fieldName: clusterRow.field_name || '' });
+      if (payload.status === 200 && payload.body && !payload.body.error) {
+        clusterRow.taxonomy_run_metadata = payload.body;
+      }
+    } catch (metaErr) {
+      console.warn('/api/cluster/:id metadata fallback:', metaErr.message);
+    }
+    res.json(clusterRow);
   } catch (err) { console.error('/api/cluster/:id:', err.message); res.status(500).json({ error: err.message }); }
 });
 
@@ -1267,6 +1277,209 @@ app.get('/api/run-metadata', async (req, res) => {
       table_exists: true,
     });
   } catch (err) { console.error('/api/run-metadata:', err.message); res.status(500).json({ error: err.message }); }
+});
+
+
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return null;
+}
+
+function parseMaybeJson(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+function recoveryFromReport(report) {
+  const strict = report?.strict_graph_recovery || report?.strict_recovery || null;
+  const best = strict?.best_config || strict?.best || {};
+  if (!strict && !best) return null;
+  return {
+    recovered_labels: firstNonEmpty(strict?.recovered_labels, strict?.grouped_labels, best?.grouped_labels),
+    true_anomaly_labels: firstNonEmpty(strict?.true_anomaly_labels, strict?.isolated_labels, best?.isolated_labels),
+    recovered_occurrences: firstNonEmpty(strict?.recovered_occurrences, best?.grouped_occurrences),
+    true_anomaly_occurrences: firstNonEmpty(strict?.true_anomaly_occurrences, best?.isolated_occurrences),
+    label_recovery_rate: firstNonEmpty(best?.label_recovery_rate, strict?.label_recovery_rate),
+    occurrence_recovery_rate: firstNonEmpty(best?.occurrence_recovery_rate, strict?.occurrence_recovery_rate),
+    similarity_threshold: firstNonEmpty(best?.similarity_threshold, strict?.similarity_threshold),
+    k_neighbors: firstNonEmpty(best?.k_neighbors, strict?.k_neighbors),
+    graph_communities_found: firstNonEmpty(best?.graph_communities_found, strict?.graph_communities_found),
+  };
+}
+
+async function computeRunStatsFromClusters({ runId, fieldName }) {
+  if (!(await tableExists('taxonomy_clusters'))) return {};
+  const tcCols = await getCols('taxonomy_clusters');
+  const aCol = anomalyColSql(tcCols, 'tc');
+
+  const cond = [];
+  const vals = [];
+  if (fieldName) {
+    vals.push(fieldName);
+    cond.push(`tc.field_name = $${vals.length}`);
+  }
+  if (runId && (tcCols.has('run_id') || tcCols.has('cluster_version'))) {
+    const runConds = [];
+    vals.push(runId);
+    const idx = vals.length;
+    if (tcCols.has('run_id')) runConds.push(`tc.run_id = $${idx}`);
+    if (tcCols.has('cluster_version')) runConds.push(`tc.cluster_version = $${idx}`);
+    if (runConds.length) cond.push(`(${runConds.join(' OR ')})`);
+  }
+  if (!cond.length) return {};
+
+  const where = `WHERE ${cond.join(' AND ')}`;
+  const { rows } = await pool.query(`
+    SELECT
+      COUNT(*)::int AS final_cluster_count,
+      ${tcCols.has('cluster_size') ? 'COALESCE(SUM(tc.cluster_size),0)::bigint AS total_labels' : 'NULL::bigint AS total_labels'},
+      ${tcCols.has('total_occurrences') ? 'COALESCE(SUM(tc.total_occurrences),0)::bigint AS total_occurrences' : 'NULL::bigint AS total_occurrences'},
+      ${aCol ? `COUNT(*) FILTER (WHERE ${aCol} = true)::int AS true_anomaly_count` : 'NULL::int AS true_anomaly_count'},
+      ${tcCols.has('cluster_size') && aCol ? `COALESCE(SUM(tc.cluster_size) FILTER (WHERE ${aCol} = false),0)::bigint AS base_grouped_labels` : 'NULL::bigint AS base_grouped_labels'},
+      ${tcCols.has('cluster_size') && aCol ? `COALESCE(SUM(tc.cluster_size) FILTER (WHERE ${aCol} = true),0)::bigint AS base_anomaly_labels` : 'NULL::bigint AS base_anomaly_labels'}
+    FROM taxonomy_clusters tc
+    ${where}
+  `, vals);
+
+  const row = rows[0] || {};
+  if (!Number(row.final_cluster_count || 0) && fieldName && runId) {
+    return computeRunStatsFromClusters({ runId: null, fieldName });
+  }
+  return row;
+}
+
+async function runMetadataPayload(runId, options = {}) {
+  const cleanRunId = String(runId || '').trim();
+  const fieldName = String(options.fieldName || '').trim();
+
+  const exists = await tableExists('taxonomy_run_metadata');
+  if (!exists) {
+    const computed = await computeRunStatsFromClusters({ runId: cleanRunId, fieldName });
+    if (Object.keys(computed).length) {
+      return { status: 200, body: { run_id: cleanRunId || null, field_name: fieldName || null, table_exists: false, metadata_source: 'computed_from_taxonomy_clusters', ...computed } };
+    }
+    return { status: 404, body: { error: 'taxonomy_run_metadata table does not exist', table_exists: false } };
+  }
+
+  if (!cleanRunId && !fieldName) return { status: 400, body: { error: 'Missing run id or field_name' } };
+
+  const cols = await getCols('taxonomy_run_metadata');
+  const pick = (name, fallback) => cols.has(name) ? name : fallback;
+  const select = [
+    pick('run_id', "NULL::text AS run_id"),
+    pick('field_name', "NULL::text AS field_name"),
+    pick('model_name', "NULL::text AS model_name"),
+    pick('embedding_device', "NULL::text AS embedding_device"),
+    pick('text_mode', "NULL::text AS text_mode"),
+    pick('min_cluster_size', 'NULL::int AS min_cluster_size'),
+    pick('min_samples', 'NULL::int AS min_samples'),
+    pick('hdbscan_metric', "NULL::text AS hdbscan_metric"),
+    pick('graph_k_values', "NULL::text AS graph_k_values"),
+    pick('graph_threshold_values', "NULL::text AS graph_threshold_values"),
+    pick('graph_resolution', 'NULL::numeric AS graph_resolution'),
+    pick('graph_min_community_size', 'NULL::int AS graph_min_community_size'),
+    pick('mutual_knn', 'NULL::boolean AS mutual_knn'),
+    pick('same_field_only', 'NULL::boolean AS same_field_only'),
+    pick('total_labels', 'NULL::bigint AS total_labels'),
+    pick('total_occurrences', 'NULL::bigint AS total_occurrences'),
+    pick('base_grouped_labels', 'NULL::bigint AS base_grouped_labels'),
+    pick('base_anomaly_labels', 'NULL::bigint AS base_anomaly_labels'),
+    pick('final_cluster_count', 'NULL::bigint AS final_cluster_count'),
+    pick('true_anomaly_count', 'NULL::bigint AS true_anomaly_count'),
+    pick('created_at', 'NULL::timestamp AS created_at'),
+    pick('updated_at', 'NULL::timestamp AS updated_at'),
+    cols.has('run_report_json') ? 'run_report_json::text AS run_report_json' : 'NULL::text AS run_report_json',
+  ];
+
+  async function queryMeta(whereSql, params, sourceLabel) {
+    const { rows } = await pool.query(`
+      SELECT ${select.join(', ')}
+      FROM taxonomy_run_metadata
+      ${whereSql}
+      ORDER BY ${cols.has('created_at') ? 'created_at DESC NULLS LAST,' : ''} field_name NULLS LAST, run_id NULLS LAST
+      LIMIT 1
+    `, params);
+    if (!rows.length) return null;
+    return { row: rows[0], sourceLabel };
+  }
+
+  let found = null;
+  if (cleanRunId && fieldName && cols.has('run_id') && cols.has('field_name')) {
+    found = await queryMeta('WHERE run_id = $1 AND field_name = $2', [cleanRunId, fieldName], 'exact_run_and_field');
+  }
+  if (!found && cleanRunId && cols.has('run_id')) {
+    found = await queryMeta('WHERE run_id = $1', [cleanRunId], 'exact_run');
+  }
+  if (!found && fieldName && cols.has('field_name')) {
+    found = await queryMeta('WHERE field_name = $1', [fieldName], 'latest_field_metadata');
+  }
+  if (!found) {
+    const computed = await computeRunStatsFromClusters({ runId: cleanRunId, fieldName });
+    if (Object.keys(computed).length) {
+      return { status: 200, body: { run_id: cleanRunId || null, field_name: fieldName || null, table_exists: true, metadata_source: 'computed_from_taxonomy_clusters', ...computed } };
+    }
+    return { status: 404, body: { error: `No metadata found for run_id ${cleanRunId || '(none)'}${fieldName ? ` / field ${fieldName}` : ''}`, table_exists: true } };
+  }
+
+  const row = found.row;
+  const report = parseMaybeJson(row.run_report_json);
+  const strict = recoveryFromReport(report);
+  const computed = await computeRunStatsFromClusters({ runId: cleanRunId || row.run_id, fieldName: fieldName || row.field_name });
+
+  const body = {
+    ...row,
+    ...Object.fromEntries(Object.entries(computed).filter(([_, v]) => v !== null && v !== undefined)),
+    table_exists: true,
+    metadata_source: found.sourceLabel,
+    strict_recovery: strict,
+  };
+
+  // If metadata columns are sparse, fill from parsed report where possible.
+  if (report) {
+    body.model_name = firstNonEmpty(body.model_name, report.model_name, report.model);
+    body.embedding_device = firstNonEmpty(body.embedding_device, report.embedding_device, report.device);
+    body.text_mode = firstNonEmpty(body.text_mode, report.text_mode);
+    body.hdbscan_metric = firstNonEmpty(body.hdbscan_metric, report.base_hdbscan?.metric);
+    body.min_cluster_size = firstNonEmpty(body.min_cluster_size, report.base_hdbscan?.min_cluster_size);
+    body.min_samples = firstNonEmpty(body.min_samples, report.base_hdbscan?.min_samples);
+    body.total_labels = firstNonEmpty(body.total_labels, report.total_labels, report.input_labels);
+    body.total_occurrences = firstNonEmpty(body.total_occurrences, report.total_occurrences);
+    body.final_cluster_count = firstNonEmpty(body.final_cluster_count, report.final_cluster_count);
+    body.base_grouped_labels = firstNonEmpty(body.base_grouped_labels, report.base_hdbscan?.base_grouped_labels);
+    body.base_anomaly_labels = firstNonEmpty(body.base_anomaly_labels, report.base_hdbscan?.base_anomaly_labels);
+  }
+
+  return { status: 200, body };
+}
+
+async function sendRunMetadataById(req, res) {
+  try {
+    const payload = await runMetadataPayload(req.params.runId, { fieldName: req.query.field_name || req.query.field || '' });
+    res.status(payload.status).json(payload.body);
+  } catch (err) {
+    console.error('/api/run-metadata/:runId:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+app.get('/api/run-metadata/:runId', sendRunMetadataById);
+app.get('/api/taxonomy-run-metadata/:runId', sendRunMetadataById);
+app.get('/api/run/:runId/metadata', sendRunMetadataById);
+
+// Field fallback for clusters whose run_id/cluster_version is missing or stale.
+app.get('/api/run-metadata-by-field/:fieldName', async (req, res) => {
+  try {
+    const payload = await runMetadataPayload('', { fieldName: req.params.fieldName });
+    res.status(payload.status).json(payload.body);
+  } catch (err) {
+    console.error('/api/run-metadata-by-field/:fieldName:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 

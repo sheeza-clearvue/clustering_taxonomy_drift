@@ -80,6 +80,40 @@ function getNested(obj, path) {
   return path.split('.').reduce((acc, key) => (acc && acc[key] != null ? acc[key] : undefined), obj)
 }
 
+
+function isUsefulMetaValue(value) {
+  if (value == null) return false
+  if (typeof value === 'string') return value.trim() !== ''
+  if (Array.isArray(value)) return value.length > 0
+  if (typeof value === 'object') return Object.keys(value).length > 0
+  return true
+}
+
+function mergeMetadataCandidates(candidates) {
+  const out = {}
+  const strict = {}
+
+  for (const candidate of candidates.filter(Boolean)) {
+    for (const [key, value] of Object.entries(candidate)) {
+      if (key === 'strict_recovery' && value && typeof value === 'object') {
+        for (const [strictKey, strictValue] of Object.entries(value)) {
+          if (!isUsefulMetaValue(strict[strictKey]) && isUsefulMetaValue(strictValue)) {
+            strict[strictKey] = strictValue
+          }
+        }
+        continue
+      }
+
+      if (!isUsefulMetaValue(out[key]) && isUsefulMetaValue(value)) {
+        out[key] = value
+      }
+    }
+  }
+
+  if (Object.keys(strict).length) out.strict_recovery = strict
+  return Object.keys(out).length ? out : null
+}
+
 function safeLabelCount(row) {
   return Number(row?.value_count ?? row?.count ?? row?.total_occurrences ?? row?.occurrences ?? 0) || 0
 }
@@ -266,26 +300,52 @@ export default function RightInspector({ clusterId }) {
       if (clusterValue) {
         setCluster(clusterValue)
         const runId = clusterValue.run_id || clusterValue.cluster_run_id || clusterValue.cluster_version
+        const fieldName = clusterValue.field_name || ''
+        const encodedField = encodeURIComponent(fieldName)
+        const urls = []
         if (runId) {
-          const urls = [
-            `/api/taxonomy-run-metadata/${runId}`,
-            `/api/run-metadata/${runId}`,
-            `/api/run/${runId}/metadata`,
-          ]
-
-          for (const url of urls) {
-            try {
-              const res = await fetch(url)
-              if (!res.ok) continue
-              const data = await res.json()
-              if (cancelled) return
-              if (data && !data.error) {
-                setRunMeta(data)
-                break
-              }
-            } catch {}
-          }
+          const encodedRun = encodeURIComponent(runId)
+          urls.push(
+            `/api/taxonomy-run-metadata/${encodedRun}?field_name=${encodedField}`,
+            `/api/run-metadata/${encodedRun}?field_name=${encodedField}`,
+            `/api/run/${encodedRun}/metadata?field_name=${encodedField}`,
+          )
         }
+        if (fieldName) {
+          urls.push(`/api/run-metadata-by-field/${encodedField}`)
+        }
+
+        const metadataCandidates = []
+
+        for (const url of urls) {
+          try {
+            const res = await fetch(url)
+            if (!res.ok) continue
+            const data = await res.json()
+            if (cancelled) return
+            if (data && !data.error) metadataCandidates.push(data)
+          } catch {}
+        }
+
+        // Always merge the exact/fallback endpoint with the run list. The endpoint can
+        // legitimately return computed cluster stats, while /api/run-metadata often
+        // has the richer model/device/config row used by the Intelligence page.
+        try {
+          const res = await fetch('/api/run-metadata')
+          if (res.ok) {
+            const data = await res.json()
+            const runs = Array.isArray(data?.runs) ? data.runs : []
+            const exact = runs.find(r => r.field_name === fieldName && runId && r.run_id === runId)
+            const versionExact = runs.find(r => r.field_name === fieldName && runId && String(r.run_id || '') === String(clusterValue.cluster_version || ''))
+            const fieldLatest = runs.find(r => r.field_name === fieldName)
+            if (exact) metadataCandidates.push(exact)
+            if (versionExact && versionExact !== exact) metadataCandidates.push(versionExact)
+            if (fieldLatest && fieldLatest !== exact && fieldLatest !== versionExact) metadataCandidates.push(fieldLatest)
+          }
+        } catch {}
+
+        const mergedMetadata = mergeMetadataCandidates(metadataCandidates)
+        if (mergedMetadata && !cancelled) setRunMeta(mergedMetadata)
       }
 
       setLabels(labelsValue)
@@ -322,15 +382,31 @@ export default function RightInspector({ clusterId }) {
 
   const baseAnomalyLabels = metadata?.base_anomaly_labels ?? getNested(report, 'base_hdbscan.base_anomaly_labels')
   const baseGroupedLabels = metadata?.base_grouped_labels ?? getNested(report, 'base_hdbscan.base_grouped_labels')
-  const recoveredLabels = getNested(report, 'strict_graph_recovery.recovered_labels')
-  const trueAnomalyLabels = metadata?.true_anomaly_count ?? getNested(report, 'strict_graph_recovery.true_anomaly_labels')
-  const recoveryRate = getNested(report, 'strict_graph_recovery.best_config.label_recovery_rate')
-  const occurrenceRecoveryRate = getNested(report, 'strict_graph_recovery.best_config.occurrence_recovery_rate')
-  const similarityThreshold = metadata?.graph_threshold_values || getNested(report, 'strict_graph_recovery.best_config.similarity_threshold') || getNested(report, 'outputs.cluster_db_storage.similarity_threshold')
-  const kNeighbors = metadata?.graph_k_values || getNested(report, 'strict_graph_recovery.best_config.k_neighbors')
-  const modelName = metadata?.model_name || getNested(report, 'model_name')
-  const embeddingDevice = metadata?.embedding_device || getNested(report, 'embedding_device')
-  const textMode = metadata?.text_mode || getNested(report, 'text_mode')
+  const recoveredLabels =
+    metadata?.strict_recovery?.recovered_labels ??
+    getNested(report, 'strict_graph_recovery.recovered_labels')
+  const trueAnomalyLabels =
+    metadata?.strict_recovery?.true_anomaly_labels ??
+    metadata?.true_anomaly_count ??
+    getNested(report, 'strict_graph_recovery.true_anomaly_labels')
+  const recoveryRate =
+    metadata?.strict_recovery?.label_recovery_rate ??
+    getNested(report, 'strict_graph_recovery.best_config.label_recovery_rate')
+  const occurrenceRecoveryRate =
+    metadata?.strict_recovery?.occurrence_recovery_rate ??
+    getNested(report, 'strict_graph_recovery.best_config.occurrence_recovery_rate')
+  const similarityThreshold =
+    metadata?.strict_recovery?.similarity_threshold ??
+    metadata?.graph_threshold_values ??
+    getNested(report, 'strict_graph_recovery.best_config.similarity_threshold') ??
+    getNested(report, 'outputs.cluster_db_storage.similarity_threshold')
+  const kNeighbors =
+    metadata?.strict_recovery?.k_neighbors ??
+    metadata?.graph_k_values ??
+    getNested(report, 'strict_graph_recovery.best_config.k_neighbors')
+  const modelName = metadata?.model_name || getNested(report, 'model_name') || cluster?.model_name
+  const embeddingDevice = metadata?.embedding_device || getNested(report, 'embedding_device') || cluster?.embedding_device
+  const textMode = metadata?.text_mode || getNested(report, 'text_mode') || cluster?.text_mode
   const hdbscanMetric = metadata?.hdbscan_metric || getNested(report, 'base_hdbscan.metric')
   const minClusterSize = metadata?.min_cluster_size || getNested(report, 'base_hdbscan.min_cluster_size')
   const minSamples = metadata?.min_samples || getNested(report, 'base_hdbscan.min_samples')
@@ -339,6 +415,11 @@ export default function RightInspector({ clusterId }) {
   const totalRunLabels = metadata?.total_labels || getNested(report, 'total_labels')
   const finalClusterCount = metadata?.final_cluster_count || getNested(report, 'final_cluster_count')
   const runOccurrences = metadata?.total_occurrences || getNested(report, 'total_occurrences')
+  const hasAnyRunMetadata = [
+    runId, modelName, embeddingDevice, textMode, hdbscanMetric, minClusterSize, minSamples,
+    kNeighbors, similarityThreshold, totalRunLabels, runOccurrences, finalClusterCount,
+    baseGroupedLabels, baseAnomalyLabels, recoveredLabels, trueAnomalyLabels,
+  ].some(isUsefulMetaValue)
   const tightness = medoidSimilarity == null ? null : Math.max(0, Math.min(1, 1 - ((1 - medoidSimilarity) * 1.8)))
   const avgIntra = medoidSimilarity == null ? null : Math.max(0, Math.min(1, medoidSimilarity - 0.16))
 
@@ -478,6 +559,9 @@ export default function RightInspector({ clusterId }) {
               </Section>
 
               <Section title="Run Metadata">
+                <DetailRow label="Run ID" value={runId} />
+                <DetailRow label="Field" value={cluster?.field_name} />
+                <DetailRow label="Metadata source" value={metadata?.metadata_source} />
                 <DetailRow label="Model" value={modelName} />
                 <DetailRow label="Embedding device" value={embeddingDevice} pill color="#22d3ee" />
                 <DetailRow label="Text mode" value={textMode} />
@@ -488,16 +572,21 @@ export default function RightInspector({ clusterId }) {
                 <DetailRow label="Similarity threshold" value={similarityThreshold} />
                 <DetailRow label="Mutual KNN" value={mutualKnn == null ? '' : String(mutualKnn)} />
                 <DetailRow label="Same-field only" value={sameFieldOnly == null ? '' : String(sameFieldOnly)} />
+                {!hasAnyRunMetadata && (
+                  <div className="text-[10.5px] leading-relaxed mt-2" style={{ color: '#f97316' }}>
+                    No run metadata could be matched for this cluster. Check taxonomy_run_metadata rows for this field/run.
+                  </div>
+                )}
               </Section>
 
               <Section title="Run Recovery Signals">
-                <DetailRow label="Run labels" value={totalRunLabels ? formatNumber(totalRunLabels) : ''} />
-                <DetailRow label="Run occurrences" value={runOccurrences ? formatNumber(runOccurrences) : ''} />
-                <DetailRow label="Final clusters" value={finalClusterCount ? formatNumber(finalClusterCount) : ''} />
-                <DetailRow label="Base grouped labels" value={baseGroupedLabels ? formatNumber(baseGroupedLabels) : ''} />
-                <DetailRow label="Base anomaly labels" value={baseAnomalyLabels ? formatNumber(baseAnomalyLabels) : ''} />
-                <DetailRow label="Recovered labels" value={recoveredLabels ? formatNumber(recoveredLabels) : ''} />
-                <DetailRow label="True anomaly labels" value={trueAnomalyLabels ? formatNumber(trueAnomalyLabels) : ''} />
+                <DetailRow label="Run labels" value={totalRunLabels != null && totalRunLabels !== '' ? formatNumber(totalRunLabels) : ''} />
+                <DetailRow label="Run occurrences" value={runOccurrences != null && runOccurrences !== '' ? formatNumber(runOccurrences) : ''} />
+                <DetailRow label="Final clusters" value={finalClusterCount != null && finalClusterCount !== '' ? formatNumber(finalClusterCount) : ''} />
+                <DetailRow label="Base grouped labels" value={baseGroupedLabels != null && baseGroupedLabels !== '' ? formatNumber(baseGroupedLabels) : ''} />
+                <DetailRow label="Base anomaly labels" value={baseAnomalyLabels != null && baseAnomalyLabels !== '' ? formatNumber(baseAnomalyLabels) : ''} />
+                <DetailRow label="Recovered labels" value={recoveredLabels != null && recoveredLabels !== '' ? formatNumber(recoveredLabels) : ''} />
+                <DetailRow label="True anomaly labels" value={trueAnomalyLabels != null && trueAnomalyLabels !== '' ? formatNumber(trueAnomalyLabels) : ''} />
                 <MetricBar label="Label recovery rate" value={recoveryRate} color="#22c55e" />
                 <MetricBar label="Occurrence recovery rate" value={occurrenceRecoveryRate} color="#22c55e" />
               </Section>
