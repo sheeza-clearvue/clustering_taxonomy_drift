@@ -481,7 +481,7 @@ export default function Observatory() {
             <button onClick={() => navigate('overview')}
               className="flex items-center justify-center gap-1.5 rounded-lg py-2 text-[9.5px] font-semibold transition-all duration-150"
               style={{ background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.26)', color: '#a855f7' }}>
-              <LayoutDashboard size={12} /> Intelligence
+              <LayoutDashboard size={12} /> Analysis
             </button>
           </div>
         </div>

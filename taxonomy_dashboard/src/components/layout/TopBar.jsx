@@ -2,7 +2,7 @@ import { Search, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import useStore from '../../store/useStore.js'
 
 const PAGE_LABELS = {
-  overview:  { title: 'Intelligence', sub: 'Compression, quality, anomalies, merge risk, coverage, and metadata' },
+  overview: { title: '', sub: '' },
 }
 
 export default function TopBar() {

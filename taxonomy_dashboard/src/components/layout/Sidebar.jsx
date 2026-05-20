@@ -4,7 +4,7 @@ import useStore from '../../store/useStore.js'
 
 const NAV = [
   { id: 'observatory', label: 'Observatory',  sub: 'Explore clusters', Icon: Orbit,           color: '#00d4ff' },
-  { id: 'overview',    label: 'Intelligence', sub: 'Health and insights', Icon: LayoutDashboard, color: '#a855f7' },
+  { id: 'overview',    label: 'Analysis', sub: 'Insights', Icon: LayoutDashboard, color: '#a855f7' },
 ]
 
 function NavItem({ item, active, onClick }) {

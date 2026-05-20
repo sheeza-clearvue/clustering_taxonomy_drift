@@ -58,11 +58,12 @@ function Panel({ id, title, subtitle, icon: Icon = Activity, children, compact =
   )
 }
 
-function MetricCard({ label, value, note, color = '#00d4ff', icon: Icon = Sparkles, onClick }) {
+function MetricCard({ label, value, note, color = '#00d4ff', icon: Icon = Sparkles, onClick, title }) {
   const Wrapper = onClick ? 'button' : 'div'
   return (
     <Wrapper
       onClick={onClick}
+      title={title}
       className="rounded-2xl p-4 text-left min-w-0 transition-all duration-150 hover:-translate-y-0.5"
       style={{ background: `linear-gradient(135deg, ${color}10, rgba(255,255,255,0.018))`, border: `1px solid ${color}28`, boxShadow: `0 0 26px ${color}08` }}
     >
@@ -257,8 +258,8 @@ function ProductionMappingPanel({ production, runs }) {
   return (
     <div className="space-y-4">
       <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
-        <MetricCard label="Latest Run" value={String(latestRun).replace('mapper_', '').slice(0, 18) || '—'} color="#00d4ff" icon={Activity} note={summary.mapper_window_start && summary.mapper_window_end ? `${new Date(summary.mapper_window_start).toLocaleString()} → ${new Date(summary.mapper_window_end).toLocaleString()}` : 'No mapper window returned.'} />
-        <MetricCard label="Mapped Labels" value={fmt(totalRows)} color="#a855f7" icon={Layers} note={`${fmt(n(summary.distinct_calls))} distinct calls processed in the latest mapper run.`} />
+        <MetricCard label="Latest Run" value={String(latestRun).replace('mapper_', '').slice(0, 18) || '—'} color="#00d4ff" icon={Activity} note={summary.mapper_window_start && summary.mapper_window_end ? `${new Date(summary.mapper_window_start).toLocaleString()} → ${new Date(summary.mapper_window_end).toLocaleString()}` : 'No mapper window returned.'} title={String(latestRun)} />
+        <MetricCard label="Mapped Labels" value={fmt(totalRows)} color="#a855f7" icon={Layers} note={`${fmt(n(summary.distinct_calls))} distinct calls produced mapped taxonomy labels in the latest run.`} />
         <MetricCard label="Existing Cluster" value={existingRate != null ? pct(existingRate, 1) : '—'} color="#10b981" icon={CheckCircle} note={`${fmt(existingRows)} labels safely mapped into approved taxonomy clusters.`} />
         <MetricCard label="Emerging" value={fmt(emergingRows)} color={emergingRows ? '#f97316' : '#10b981'} icon={AlertTriangle} note={`${fmt(n(summary.new_cluster_candidate_rows))} new-cluster candidates, ${fmt(n(summary.true_anomaly_rows))} low-similarity anomalies.`} />
         <MetricCard label="Config Issues" value={fmt(configRows)} color={configRows ? '#ef4444' : '#10b981'} icon={Database} note="Rows with no active cluster reference for the field." />
@@ -313,7 +314,7 @@ function ProductionMappingPanel({ production, runs }) {
         <div className="rounded-xl overflow-hidden" style={{ border: '1px solid rgba(26,45,74,0.55)' }}>
           <div className="px-4 py-3" style={{ background: 'rgba(255,255,255,0.022)', borderBottom: '1px solid rgba(26,45,74,0.45)' }}>
             <div className="text-[9px] uppercase tracking-[0.2em] text-dust font-bold">Emerging Watchlist</div>
-            <div className="text-[10px] text-dust/70 mt-1">Production labels not safe enough for canonical mapping.</div>
+            <div className="text-[10px] text-dust/70 mt-1">Held out of canonical mapping because confidence is below the approved-cluster threshold.</div>
           </div>
           <div className="max-h-[320px] overflow-y-auto p-3 flex flex-col gap-2" style={{ scrollbarWidth: 'thin', scrollbarColor: '#1a2d4a transparent' }}>
             {emerging.map((row, i) => {
@@ -515,7 +516,7 @@ export default function OverviewPage() {
   const actionItems = useMemo(() => {
     const items = []
     if (productionEmergingCount > 0) {
-      items.push({ title: 'Production emerging labels', severity: 'warning', metric: fmt(productionEmergingCount), detail: 'Latest mapper run found labels that should stay in the emerging watchlist instead of being forced into approved clusters.', target: 'production' })
+      items.push({ title: 'Production emerging labels', severity: 'warning', metric: fmt(productionEmergingCount), detail: `Latest mapper run found ${fmt(productionEmergingCount)} ${productionEmergingCount === 1 ? 'label' : 'labels'} that should stay in the emerging watchlist instead of being forced into an approved cluster.`, target: 'production' })
     }
     if (productionConfigIssueCount > 0) {
       items.push({ title: 'Production config issues', severity: 'critical', metric: fmt(productionConfigIssueCount), detail: 'Some production rows have no active cluster reference for their field.', target: 'production' })
@@ -551,9 +552,9 @@ export default function OverviewPage() {
       <div className="max-w-[1540px] mx-auto">
         <div className="flex items-start justify-between gap-4 mb-3">
           <div>
-            <h1 className="text-[22px] font-bold text-star tracking-tight">Taxonomy Intelligence Center</h1>
+            <h1 className="text-[22px] font-bold text-star tracking-tight">Taxonomy Health</h1>
             <p className="text-[11px] text-dust mt-1 max-w-[820px]">
-              One operational page for deciding what to trust, what to review, and what to fix across compression, semantic quality, anomaly pressure, merge risk, coverage, and run metadata.
+              Track and Review compression, naming coverage, anomaly load, medoid reliability, and mapping quality across every taxonomy field.
             </p>
           </div>
           {loading && <div className="text-[10px] uppercase tracking-[0.2em] text-dust">Loading signals…</div>}
@@ -572,7 +573,7 @@ export default function OverviewPage() {
             </div>
           </Panel>
 
-          <Panel id="production" title="Production Mapping" subtitle="hourly mapper output from Iris-facing canonical, emerging, and config feeds" icon={Activity}>
+          <Panel id="production" title="Production Mapping" subtitle="latest hourly mapper feed, field health, and emerging watchlist" icon={Activity}>
             <ProductionMappingPanel production={data.productionMapper} runs={data.productionRuns} />
           </Panel>
 
@@ -594,7 +595,7 @@ export default function OverviewPage() {
               <div className="rounded-xl p-4" style={{ background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(26,45,74,0.55)' }}>
                 <div className="text-[9px] uppercase tracking-[0.2em] text-dust mb-3 font-bold">How to read this page</div>
                 <p className="text-[11px] leading-relaxed" style={{ color: '#64748b' }}>
-                  This page is not another visualization tab. It is the control room for taxonomy quality: first check the Action Queue, then use the Field Health Matrix to decide which field needs cleanup, then inspect compression, anomalies, merge risk, and metadata only where needed.
+                  Start with Action Queue. Use Field Health Matrix to choose the field, then open only the detail section you need: production, compression, quality, anomalies, merge, coverage, or metadata.
                 </p>
               </div>
             </div>
@@ -663,10 +664,10 @@ export default function OverviewPage() {
                 <DataRow label="Anomaly labels" value={fmt(anomalyLabels)} />
                 <DataRow label="Anomaly occurrences" value={fmt(anomalyOccurrences)} />
                 <DataRow label="Highest anomaly field" value={highestAnomaly ? highestAnomaly.field_name : '—'} />
-                <DataRow label="Recovery available" value={data.recovery?.has_recovery ? 'Yes' : 'Metadata/API only'} color={data.recovery?.has_recovery ? '#10b981' : '#64748b'} chip />
-                {data.recovery?.has_recovery && <Progress label="Rescue rate" value={data.recovery.rescue_rate || 0} color="#a855f7" right={pct(data.recovery.rescue_rate || 0, 1)} />}
+                <DataRow label="Strict graph recovery" value={data.recovery?.has_recovery ? 'Available from prior runs' : 'Metadata/API only'} color={data.recovery?.has_recovery ? '#10b981' : '#64748b'} chip />
+                {data.recovery?.has_recovery && <Progress label="Recovered coverage" value={data.recovery.rescue_rate || 0} color="#a855f7" right={pct(data.recovery.rescue_rate || 0, 1)} />}
                 <p className="text-[10.5px] leading-relaxed mt-4" style={{ color: '#64748b' }}>
-                  Anomalies are labels not absorbed into stable semantic clusters. They can be true unique cases, unresolved drift, or recoverable threshold failures.
+                  Anomalies are labels not absorbed into stable semantic clusters. Use this section to separate true unique cases from recoverable threshold failures.
                 </p>
               </div>
               <div>
