@@ -111,7 +111,7 @@ DEFAULT_NGP_METADATA_COLUMNS = (
 
 STABLE_MAPPING_STATUS = "EXISTING_CLUSTER"
 KNOWN_ANOMALY_STATUS = "KNOWN_TRUE_ANOMALY"
-EMERGING_MAPPING_STATUSES = {"NEW_CLUSTER_CANDIDATE", "TRUE_ANOMALY", KNOWN_ANOMALY_STATUS}
+EMERGING_MAPPING_STATUSES = {"NEW_CLUSTER_CANDIDATE", "TRUE_ANOMALY"}
 CONFIG_ISSUE_STATUS = "NO_CLUSTER_REFERENCE"
 
 FIELD_EMBEDDING_CONTEXT = {
@@ -816,7 +816,7 @@ def ensure_output_schema(
                     created_at,
                     updated_at
                 FROM {output_t}
-                WHERE mapping_status = 'EXISTING_CLUSTER';
+                WHERE mapping_status IN ('EXISTING_CLUSTER', 'KNOWN_TRUE_ANOMALY');
                 """
             )
             cur.execute(
@@ -842,7 +842,7 @@ def ensure_output_schema(
                     created_at,
                     updated_at
                 FROM {output_t}
-                WHERE mapping_status IN ('NEW_CLUSTER_CANDIDATE', 'TRUE_ANOMALY', 'KNOWN_TRUE_ANOMALY');
+                WHERE mapping_status IN ('NEW_CLUSTER_CANDIDATE', 'TRUE_ANOMALY');
                 """
             )
             cur.execute(
@@ -973,9 +973,9 @@ def load_active_clusters(
             FROM {cluster_t} c
             LEFT JOIN taxonomy_cluster_names n
                 ON c.field_name = n.field_name
-                AND c.run_id = n.run_id
-                AND c.cluster_version = n.cluster_version
                 AND c.cluster_id = n.cluster_id
+                AND (n.run_id = c.run_id OR n.run_id IS NULL OR c.run_id IS NULL)
+                AND (n.cluster_version = c.cluster_version OR n.cluster_version IS NULL OR c.cluster_version IS NULL)
             WHERE COALESCE(c.active, TRUE) = TRUE
               AND COALESCE(c.is_true_anomaly_cluster, FALSE) = {anomaly_filter}
               AND c.field_name = ANY(%s)
@@ -1036,10 +1036,13 @@ def load_exact_label_map(
         version_filter = "AND COALESCE(m.cluster_version, 'v1') = %s"
         params.append(cluster_version)
 
+    # The current cluster row is the source of truth. A label-map row can be stale
+    # after a true anomaly is promoted to a standard cluster, so do not let
+    # m.final_is_true_anomaly override c.is_true_anomaly_cluster.
     if include_anomaly_labels:
-        anomaly_filter = "AND (COALESCE(c.is_true_anomaly_cluster, FALSE) = TRUE OR COALESCE(m.final_is_true_anomaly, FALSE) = TRUE)"
+        anomaly_filter = "AND COALESCE(c.is_true_anomaly_cluster, FALSE) = TRUE"
     else:
-        anomaly_filter = "AND COALESCE(c.is_true_anomaly_cluster, FALSE) = FALSE AND COALESCE(m.final_is_true_anomaly, FALSE) = FALSE"
+        anomaly_filter = "AND COALESCE(c.is_true_anomaly_cluster, FALSE) = FALSE"
 
     sql = f"""
         SELECT
@@ -1062,9 +1065,9 @@ def load_exact_label_map(
          AND COALESCE(c.active, TRUE) = TRUE
         LEFT JOIN taxonomy_cluster_names n
           ON n.field_name = c.field_name
-         AND n.run_id = c.run_id
-         AND n.cluster_version = c.cluster_version
          AND n.cluster_id = c.cluster_id
+         AND (n.run_id = c.run_id OR n.run_id IS NULL OR c.run_id IS NULL)
+         AND (n.cluster_version = c.cluster_version OR n.cluster_version IS NULL OR c.cluster_version IS NULL)
         WHERE m.field_name = ANY(%s)
           AND m.normalized_label IS NOT NULL
           AND m.normalized_label <> ''

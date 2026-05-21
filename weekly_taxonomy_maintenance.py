@@ -1376,6 +1376,8 @@ def upsert_label_map(
     display_name: str,
     value_count: int,
     is_true_anomaly: bool,
+    final_cluster_source: Optional[str] = None,
+    base_cluster_id: Optional[str] = None,
 ) -> None:
     label_map_t = safe_pg_qualified_name(args.label_map_table)
     cols = get_columns(conn, args.label_map_table)
@@ -1388,6 +1390,8 @@ def upsert_label_map(
     assignments = {
         "raw_label": raw_label,
         "final_cluster_id": cluster_id,
+        "final_cluster_source": final_cluster_source or ("true_anomaly" if is_true_anomaly else "standard_cluster"),
+        "base_cluster_id": base_cluster_id if base_cluster_id is not None else ("-1" if is_true_anomaly else cluster_id),
         "cluster_version": cluster_version,
         "display_name": display_name,
         "value_count": value_count,
@@ -1417,6 +1421,8 @@ def upsert_label_map(
         "raw_label": raw_label,
         "normalized_label": normalized_label,
         "final_cluster_id": cluster_id,
+        "final_cluster_source": final_cluster_source or ("true_anomaly" if is_true_anomaly else "standard_cluster"),
+        "base_cluster_id": base_cluster_id if base_cluster_id is not None else ("-1" if is_true_anomaly else cluster_id),
         "cluster_version": cluster_version,
         "display_name": display_name,
         "value_count": value_count,
@@ -1511,22 +1517,27 @@ def compute_cluster_counters(conn, args: argparse.Namespace, field_name: str, cl
     output_t = safe_pg_qualified_name(args.output_table)
     map_cols = get_columns(conn, args.label_map_table)
     if not {"field_name", "normalized_label", "final_cluster_id"}.issubset(map_cols):
-        return {"row_count": 0, "distinct_call_count": 0, "weeks_seen": 0, "first_seen": None, "last_seen": None}
+        return {"row_count": 0, "distinct_call_count": 0, "weeks_seen": 0, "label_occurrence_sum": 0, "first_seen": None, "last_seen": None}
+    value_expr = "COALESCE(SUM(value_count), 0)::int" if "value_count" in map_cols else "COUNT(*)::int"
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             f"""
             WITH labels AS (
-                SELECT DISTINCT normalized_label
+                SELECT
+                    normalized_label,
+                    {value_expr} AS label_occurrence_sum
                 FROM {label_map_t}
                 WHERE field_name = %s
                   AND final_cluster_id = %s
                   AND normalized_label IS NOT NULL
                   AND normalized_label <> ''
+                GROUP BY normalized_label
             )
             SELECT
                 COUNT(o.*)::int AS row_count,
                 COUNT(DISTINCT o.source_record_id)::int AS distinct_call_count,
                 COUNT(DISTINCT date_trunc('week', COALESCE(o.classified_at, o.created_at)))::int AS weeks_seen,
+                COALESCE(MAX(l.label_occurrence_sum), 0)::int AS label_occurrence_sum,
                 MIN(COALESCE(o.classified_at, o.created_at)) AS first_seen,
                 MAX(COALESCE(o.classified_at, o.created_at)) AS last_seen
             FROM {output_t} o
@@ -1550,15 +1561,245 @@ def promotion_threshold_met(field_name: str, counters: dict[str, Any]) -> tuple[
     )
     calls = int(counters.get("distinct_call_count") or 0)
     rows = int(counters.get("row_count") or 0)
+    label_occurrences = int(counters.get("label_occurrence_sum") or 0)
+    occurrences = max(rows, label_occurrences)
     weeks = int(counters.get("weeks_seen") or 0)
     reasons = []
     if calls >= cfg["distinct_call_count"]:
         reasons.append(f"distinct_call_count {calls} >= {cfg['distinct_call_count']}")
-    if rows >= cfg["total_occurrences"]:
-        reasons.append(f"occurrence_count {rows} >= {cfg['total_occurrences']}")
+    if occurrences >= cfg["total_occurrences"]:
+        reasons.append(f"occurrence_count {occurrences} >= {cfg['total_occurrences']}")
     if weeks >= cfg["weeks_seen"]:
         reasons.append(f"weeks_seen {weeks} >= {cfg['weeks_seen']}")
     return bool(reasons), "; ".join(reasons)
+
+
+def duplicate_standard_display_name_exists(
+    conn,
+    args: argparse.Namespace,
+    *,
+    field_name: str,
+    display_name: str,
+    excluding_cluster_id: str,
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Check duplicate standard display names before promotion."""
+    if not table_exists(conn, args.cluster_name_table):
+        return False, []
+    names_t = safe_pg_qualified_name(args.cluster_name_table)
+    cluster_t = safe_pg_qualified_name(args.cluster_table)
+    name_cols = get_columns(conn, args.cluster_name_table)
+    if not {"field_name", "cluster_id", "display_name"}.issubset(name_cols):
+        return False, []
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            f"""
+            SELECT
+                n.field_name,
+                n.cluster_id,
+                n.display_name,
+                COALESCE(c.is_true_anomaly_cluster, FALSE) AS is_true_anomaly_cluster,
+                COALESCE(c.active, TRUE) AS active,
+                c.cluster_size,
+                c.total_occurrences,
+                c.medoid_label,
+                c.promotion_status
+            FROM {names_t} n
+            LEFT JOIN {cluster_t} c
+              ON c.field_name = n.field_name
+             AND c.cluster_id = n.cluster_id
+            WHERE n.field_name = %s
+              AND LOWER(TRIM(n.display_name)) = LOWER(TRIM(%s))
+              AND n.cluster_id <> %s
+              AND COALESCE(c.active, TRUE) = TRUE
+              AND COALESCE(c.is_true_anomaly_cluster, FALSE) = FALSE
+            ORDER BY c.total_occurrences DESC NULLS LAST, n.cluster_id
+            """,
+            (field_name, display_name, excluding_cluster_id),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    return bool(rows), rows
+
+
+def update_label_map_for_promoted_cluster(
+    conn,
+    args: argparse.Namespace,
+    *,
+    field_name: str,
+    cluster_id: str,
+) -> int:
+    label_map_t = safe_pg_qualified_name(args.label_map_table)
+    cols = get_columns(conn, args.label_map_table)
+    if not {"field_name", "final_cluster_id"}.issubset(cols):
+        return 0
+
+    assignments = {
+        "final_cluster_source": "promoted_from_true_anomaly",
+        "final_is_true_anomaly": False,
+        "base_cluster_id": cluster_id,
+        "updated_at": utcnow(),
+    }
+    set_parts = []
+    params: list[Any] = []
+    for col, value in assignments.items():
+        if col in cols:
+            set_parts.append(f"{safe_pg_identifier(col)} = %s")
+            params.append(value)
+    if not set_parts:
+        return 0
+
+    params.extend([field_name, cluster_id])
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {label_map_t}
+            SET {', '.join(set_parts)}
+            WHERE field_name = %s
+              AND final_cluster_id = %s
+            """,
+            params,
+        )
+        return int(cur.rowcount or 0)
+
+
+def update_mapper_output_to_standard_cluster(
+    conn,
+    args: argparse.Namespace,
+    group: UnresolvedGroup,
+    *,
+    cluster_id: str,
+    display_name: str,
+    mapping_method: str = "weekly_promoted_from_true_anomaly",
+) -> int:
+    if not args.update_mapper_output:
+        return 0
+
+    output_t = safe_pg_qualified_name(args.output_table)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {output_t}
+            SET mapped_cluster_id = %s,
+                mapped_cluster_name = %s,
+                mapped_display_name = %s,
+                mapping_status = 'EXISTING_CLUSTER',
+                mapping_method = %s,
+                updated_at = NOW()
+            WHERE field_name = %s
+              AND normalized_label = %s
+              AND mapping_status IN (
+                    'TRUE_ANOMALY',
+                    'NEW_CLUSTER_CANDIDATE',
+                    'KNOWN_TRUE_ANOMALY',
+                    'ATTACHED_TO_EXISTING_ANOMALY_CLUSTER'
+              )
+            """,
+            (cluster_id, display_name, display_name, mapping_method, group.field_name, group.normalized_label),
+        )
+        return int(cur.rowcount or 0)
+
+
+def promote_anomaly_to_standard_cluster(
+    conn,
+    args: argparse.Namespace,
+    group: UnresolvedGroup,
+    *,
+    cluster_id: str,
+    cluster_version: str,
+    display_name: str,
+    threshold_reason: str,
+) -> dict[str, Any]:
+    """Promote an individual anomaly cluster to a standard cluster with duplicate-name protection."""
+    cluster_t = safe_pg_qualified_name(args.cluster_table)
+    cluster_cols = get_columns(conn, args.cluster_table)
+
+    has_duplicate, duplicate_rows = duplicate_standard_display_name_exists(
+        conn,
+        args,
+        field_name=group.field_name,
+        display_name=display_name,
+        excluding_cluster_id=cluster_id,
+    )
+    if has_duplicate:
+        assignments = {
+            "promotion_status": "STANDARD_CLUSTER_PROMOTION_BLOCKED_DUPLICATE_NAME",
+            "promotion_candidate_reason": f"{threshold_reason}; duplicate display name exists",
+            "updated_at": utcnow(),
+        }
+        set_parts = []
+        params: list[Any] = []
+        for col, value in assignments.items():
+            if col in cluster_cols:
+                set_parts.append(f"{safe_pg_identifier(col)} = %s")
+                params.append(value)
+        if set_parts:
+            params.extend([group.field_name, cluster_id])
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE {cluster_t} SET {', '.join(set_parts)} WHERE field_name = %s AND cluster_id = %s",
+                    params,
+                )
+        return {
+            "promotion_status": "STANDARD_CLUSTER_PROMOTION_BLOCKED_DUPLICATE_NAME",
+            "promotion_reason": threshold_reason,
+            "duplicate_display_name_rows": duplicate_rows,
+            "label_map_rows_updated": 0,
+            "mapper_rows_updated": 0,
+        }
+
+    assignments = {
+        "is_true_anomaly_cluster": False,
+        "cluster_source": "promoted_from_true_anomaly",
+        "promotion_status": "PROMOTED_TO_STANDARD",
+        "promotion_candidate_reason": threshold_reason,
+        "active": True,
+        "updated_at": utcnow(),
+    }
+    set_parts = []
+    params: list[Any] = []
+    for col, value in assignments.items():
+        if col in cluster_cols:
+            set_parts.append(f"{safe_pg_identifier(col)} = %s")
+            params.append(value)
+    if set_parts:
+        params.extend([group.field_name, cluster_id])
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {cluster_t} SET {', '.join(set_parts)} WHERE field_name = %s AND cluster_id = %s",
+                params,
+            )
+
+    upsert_cluster_name(
+        conn,
+        args,
+        field_name=group.field_name,
+        cluster_id=cluster_id,
+        cluster_version=cluster_version,
+        display_name=display_name,
+        is_anomaly=False,
+        naming_method="weekly_promoted_standard_name",
+        naming_reason="Promoted recurring true anomaly to standard cluster after weekly threshold and duplicate-name check.",
+    )
+    label_map_rows_updated = update_label_map_for_promoted_cluster(
+        conn,
+        args,
+        field_name=group.field_name,
+        cluster_id=cluster_id,
+    )
+    mapper_rows_updated = update_mapper_output_to_standard_cluster(
+        conn,
+        args,
+        group,
+        cluster_id=cluster_id,
+        display_name=display_name,
+    )
+    return {
+        "promotion_status": "PROMOTED_TO_STANDARD",
+        "promotion_reason": threshold_reason,
+        "duplicate_display_name_rows": [],
+        "label_map_rows_updated": label_map_rows_updated,
+        "mapper_rows_updated": mapper_rows_updated,
+    }
 
 
 def create_or_update_anomaly_cluster(conn, args: argparse.Namespace, group: UnresolvedGroup, cluster_id: Optional[str] = None) -> tuple[str, str, dict[str, Any]]:
@@ -1648,6 +1889,8 @@ def create_or_update_anomaly_cluster(conn, args: argparse.Namespace, group: Unre
         display_name=display_name,
         value_count=max(1, group.row_count),
         is_true_anomaly=True,
+        final_cluster_source="true_anomaly",
+        base_cluster_id="-1",
     )
 
     counters = compute_cluster_counters(conn, args, field, cluster_id)
@@ -1661,6 +1904,7 @@ def create_or_update_anomaly_cluster(conn, args: argparse.Namespace, group: Unre
         "run_id": cluster_version,
         "display_name": display_name,
         "cluster_name": display_name,
+        "cluster_source": "true_anomaly",
         "centroid_embedding": vector_to_jsonb(cvec),
         "medoid_label": medoid,
         "medoid_similarity_to_centroid": medoid_sim,
@@ -1682,7 +1926,7 @@ def create_or_update_anomaly_cluster(conn, args: argparse.Namespace, group: Unre
 
     # UPDATE if exists.
     update_cols = [
-        "display_name", "cluster_name", "centroid_embedding", "medoid_label", "medoid_similarity_to_centroid",
+        "display_name", "cluster_name", "cluster_source", "centroid_embedding", "medoid_label", "medoid_similarity_to_centroid",
         "representative_labels", "cluster_size", "total_occurrences", "is_true_anomaly_cluster", "active",
         "promotion_status", "weekly_first_seen", "weekly_last_seen", "weekly_occurrence_count",
         "weekly_distinct_call_count", "weekly_weeks_seen", "promotion_candidate_reason", "updated_at",
@@ -1720,12 +1964,24 @@ def create_or_update_anomaly_cluster(conn, args: argparse.Namespace, group: Unre
                     display_name=display_name,
                     mapping_method="weekly_updated_anomaly_cluster",
                 )
-                return cluster_id, display_name, {
+                meta = {
                     "promotion_status": promotion_status,
                     "promotion_reason": threshold_reason,
                     "counters": counters,
                     "mapper_rows_updated": mapper_rows_updated,
                 }
+                if threshold_met:
+                    promotion_meta = promote_anomaly_to_standard_cluster(
+                        conn,
+                        args,
+                        group,
+                        cluster_id=cluster_id,
+                        cluster_version=cluster_version,
+                        display_name=display_name,
+                        threshold_reason=threshold_reason,
+                    )
+                    meta.update(promotion_meta)
+                return cluster_id, display_name, meta
 
     insert_cols = [c for c in base_values.keys() if c in cluster_cols]
     insert_values = [base_values[c] for c in insert_cols]
@@ -1755,12 +2011,24 @@ def create_or_update_anomaly_cluster(conn, args: argparse.Namespace, group: Unre
         display_name=display_name,
         mapping_method="weekly_created_anomaly_cluster",
     )
-    return cluster_id, display_name, {
+    meta = {
         "promotion_status": promotion_status,
         "promotion_reason": threshold_reason,
         "counters": counters,
         "mapper_rows_updated": mapper_rows_updated,
     }
+    if threshold_met:
+        promotion_meta = promote_anomaly_to_standard_cluster(
+            conn,
+            args,
+            group,
+            cluster_id=cluster_id,
+            cluster_version=cluster_version,
+            display_name=display_name,
+            threshold_reason=threshold_reason,
+        )
+        meta.update(promotion_meta)
+    return cluster_id, display_name, meta
 
 
 def map_to_existing_cluster(conn, args: argparse.Namespace, group: UnresolvedGroup, target: dict[str, Any]) -> tuple[str, str]:
@@ -1778,6 +2046,8 @@ def map_to_existing_cluster(conn, args: argparse.Namespace, group: UnresolvedGro
         display_name=target_display_name,
         value_count=max(1, group.row_count),
         is_true_anomaly=False,
+        final_cluster_source="standard_cluster",
+        base_cluster_id=target_cluster_id,
     )
     if args.update_mapper_output:
         output_t = safe_pg_qualified_name(args.output_table)
@@ -1843,7 +2113,18 @@ def weekly_unresolved_label_resolver(conn, args: argparse.Namespace, weekly_run_
         "mapped_to_existing_clusters": 0,
         "attached_to_existing_anomaly_clusters": 0,
         "promotion_candidates": 0,
+        "promoted_to_standard_clusters": 0,
+        "promotion_blocked_duplicate_names": 0,
     }
+
+    def count_promotion_result(meta: dict[str, Any]) -> None:
+        status = meta.get("promotion_status")
+        if status == "STANDARD_CLUSTER_PROMOTION_CANDIDATE":
+            summary["promotion_candidates"] += 1
+        elif status == "PROMOTED_TO_STANDARD":
+            summary["promoted_to_standard_clusters"] += 1
+        elif status == "STANDARD_CLUSTER_PROMOTION_BLOCKED_DUPLICATE_NAME":
+            summary["promotion_blocked_duplicate_names"] += 1
     if not groups:
         print("Unresolved resolver: no TRUE_ANOMALY or NEW_CLUSTER_CANDIDATE groups found in window.")
         return summary
@@ -1856,8 +2137,7 @@ def weekly_unresolved_label_resolver(conn, args: argparse.Namespace, weekly_run_
             summary["true_anomaly_groups"] += 1
             if args.apply:
                 cluster_id, display_name, meta = create_or_update_anomaly_cluster(conn, args, group)
-                if meta.get("promotion_status") == "STANDARD_CLUSTER_PROMOTION_CANDIDATE":
-                    summary["promotion_candidates"] += 1
+                count_promotion_result(meta)
                 summary["created_or_updated_anomaly_clusters"] += 1
                 resolution_status = "DONE"
             else:
@@ -1899,8 +2179,7 @@ def weekly_unresolved_label_resolver(conn, args: argparse.Namespace, weekly_run_
                 if args.apply:
                     cluster_id, display_name, meta = create_or_update_anomaly_cluster(conn, args, group, cluster_id=target_cluster_id)
                     summary["attached_to_existing_anomaly_clusters"] += 1
-                    if meta.get("promotion_status") == "STANDARD_CLUSTER_PROMOTION_CANDIDATE":
-                        summary["promotion_candidates"] += 1
+                    count_promotion_result(meta)
                     resolution_status = "DONE"
                 else:
                     cluster_id = target_cluster_id
@@ -1966,8 +2245,7 @@ def weekly_unresolved_label_resolver(conn, args: argparse.Namespace, weekly_run_
             if args.apply:
                 cluster_id, display_name, meta = create_or_update_anomaly_cluster(conn, args, group)
                 summary["created_or_updated_anomaly_clusters"] += 1
-                if meta.get("promotion_status") == "STANDARD_CLUSTER_PROMOTION_CANDIDATE":
-                    summary["promotion_candidates"] += 1
+                count_promotion_result(meta)
                 resolution_status = "DONE"
             else:
                 cluster_id = make_anomaly_cluster_id(group.field_name, group.normalized_label)
