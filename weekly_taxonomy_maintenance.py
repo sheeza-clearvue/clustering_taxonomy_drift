@@ -101,6 +101,7 @@ DEFAULT_GENERAL_PROMOTION_WEEKS = 2
 DEFAULT_STANDARD_NAMING_METHOD = "gpt"
 DEFAULT_GPT_NAMING_MODEL = os.getenv("OPENAI_NAMING_MODEL", "gpt-4o-mini")
 DEFAULT_GPT_NAME_MAX_WORDS = 6
+DEFAULT_GPT_NAME_MAX_RETRIES = 5
 
 FIELD_PROMOTION_THRESHOLDS = {
     "coaching_tags": {"distinct_call_count": 3, "total_occurrences": 5, "weeks_seen": 2},
@@ -1578,6 +1579,47 @@ def promotion_threshold_met(field_name: str, counters: dict[str, Any]) -> tuple[
     return bool(reasons), "; ".join(reasons)
 
 
+def normalize_display_name_key(value: Any) -> str:
+    """Normalize display names for duplicate validation across GPT/deterministic naming."""
+    text = str(value or "").lower().strip()
+    text = text.replace("_", " ").replace("-", " ").replace("/", " ")
+    text = re.sub(r"[^a-z0-9\s]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def has_adjacent_repeated_words(value: Any) -> bool:
+    words = str(value or "").split()
+    for idx in range(1, len(words)):
+        if words[idx].lower() == words[idx - 1].lower():
+            return True
+    return False
+
+
+def validate_promoted_display_name(
+    value: Any,
+    *,
+    existing_names: set[str],
+    rejected_names: Optional[set[str]] = None,
+    max_words: int = DEFAULT_GPT_NAME_MAX_WORDS,
+) -> list[str]:
+    """Return validation notes for a promoted standard display name."""
+    notes: list[str] = []
+    cleaned = sanitize_display_name_candidate(value, max_words=max_words)
+    if not cleaned:
+        return ["blank_name"]
+    key = normalize_display_name_key(cleaned)
+    if len(cleaned.split()) > max_words:
+        notes.append("too_many_words")
+    if key in existing_names:
+        notes.append("existing_name_conflict")
+    if rejected_names and key in rejected_names:
+        notes.append("duplicate_against_rejected_name")
+    if has_adjacent_repeated_words(cleaned):
+        notes.append("adjacent_repeated_words")
+    return notes
+
+
 def duplicate_standard_display_name_exists(
     conn,
     args: argparse.Namespace,
@@ -1665,7 +1707,7 @@ def existing_standard_display_names(
             """,
             params,
         )
-        return {str(r[0]) for r in cur.fetchall() if r and r[0]}
+        return {normalize_display_name_key(r[0]) for r in cur.fetchall() if r and r[0]}
 
 
 def sanitize_display_name_candidate(value: Any, *, max_words: int = DEFAULT_GPT_NAME_MAX_WORDS) -> str:
@@ -1703,11 +1745,12 @@ def gpt_standard_cluster_name(
     existing_names: set[str],
 ) -> tuple[Optional[str], str]:
     """
-    Use GPT for promoted standard-cluster naming.
+    Use GPT for promoted standard-cluster naming with duplicate repair retries.
 
-    Returns (name, reason). If GPT is unavailable or produces an unsafe/duplicate
-    name, name is None and reason explains why. This function is optional and
-    never mutates the DB by itself.
+    Returns (name, reason). GPT is retried for validation failures such as
+    duplicate names, blank names, adjacent repeated words, or previously rejected
+    names. After --gpt-name-max-retries attempts, this returns None and the
+    caller can fall back or block promotion.
     """
     if getattr(args, "standard_naming_method", DEFAULT_STANDARD_NAMING_METHOD) != "gpt":
         return None, "GPT naming disabled by --standard-naming-method."
@@ -1721,55 +1764,86 @@ def gpt_standard_cluster_name(
     except Exception as exc:  # pragma: no cover - optional dependency
         return None, f"openai package unavailable: {exc}"
 
-    existing_sample = sorted(existing_names)[:200]
+    max_words = int(getattr(args, "gpt_name_max_words", DEFAULT_GPT_NAME_MAX_WORDS))
+    max_retries = max(1, int(getattr(args, "gpt_name_max_retries", DEFAULT_GPT_NAME_MAX_RETRIES)))
+    existing_names = {normalize_display_name_key(name) for name in existing_names if name}
+    rejected_names: set[str] = set()
+    rejected_display_names: list[str] = []
+    validation_history: list[str] = []
     raw_examples = list(dict.fromkeys(group.raw_labels))[:12]
-    prompt = {
-        "field_name": group.field_name,
-        "normalized_label": group.normalized_label,
-        "raw_label_examples": raw_examples,
-        "current_or_proposed_name": proposed_display_name,
-        "names_to_avoid_normalized": existing_sample,
-        "rules": [
-            "Return only one display name.",
-            f"Maximum {getattr(args, 'gpt_name_max_words', DEFAULT_GPT_NAME_MAX_WORDS)} words.",
-            "Use Title Case.",
-            "Do not use quotes, bullets, punctuation-only suffixes, or explanations.",
-            "Do not invent concepts not supported by the labels.",
-            "If the proposed name is already exact and unique, return it unchanged.",
-            "If the proposed name duplicates an existing standard name, make a slightly more specific supported name.",
-        ],
-    }
 
-    try:
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model=getattr(args, "gpt_naming_model", DEFAULT_GPT_NAMING_MODEL),
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You name call-classification taxonomy clusters. "
-                        "Return a concise, supported cluster display name only."
-                    ),
-                },
-                {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+    client = OpenAI(api_key=api_key)
+
+    for attempt in range(1, max_retries + 1):
+        forbidden_names = sorted(existing_names | rejected_names)
+        prompt = {
+            "field_name": group.field_name,
+            "normalized_label": group.normalized_label,
+            "raw_label_examples": raw_examples,
+            "current_or_proposed_name": proposed_display_name,
+            "attempt": attempt,
+            "max_attempts": max_retries,
+            "names_to_avoid_normalized": forbidden_names[:350],
+            "rejected_names_for_this_cluster": rejected_display_names[-20:],
+            "previous_validation_failures": validation_history[-20:],
+            "rules": [
+                "Return only one display name.",
+                f"Maximum {max_words} words.",
+                "Use Title Case.",
+                "Preserve acronyms exactly when present, e.g. DM, LOA, IVR, TPS, CRM, VAT, MOP, KVA, MPAN, MHHS, CCL, DNC, CoT, 3CX.",
+                "Do not use quotes, bullets, IDs, counts, punctuation-only suffixes, underscores, or explanations.",
+                "Do not invent concepts not supported by the labels.",
+                "Avoid generic names unless the labels are truly broad.",
+                "Do not add words like Review just to make the name unique.",
+                "Do not return any name listed in names_to_avoid_normalized or rejected_names_for_this_cluster.",
+                "If the current/proposed name is already exact and unique, return it unchanged.",
+                "If it duplicates an existing standard name, make a more specific name using only supported label evidence.",
             ],
-            temperature=0,
-            max_tokens=24,
-        )
-        raw_name = response.choices[0].message.content if response.choices else ""
-    except Exception as exc:  # pragma: no cover - external API
-        return None, f"GPT naming call failed: {exc}"
+        }
 
-    cleaned = sanitize_display_name_candidate(
-        raw_name,
-        max_words=int(getattr(args, "gpt_name_max_words", DEFAULT_GPT_NAME_MAX_WORDS)),
-    )
-    if not cleaned:
-        return None, "GPT returned an empty/invalid display name."
-    if normalize_label(cleaned) in existing_names:
-        return None, f"GPT returned duplicate display name: {cleaned}"
-    return cleaned, "GPT-generated promoted standard cluster name."
+        try:
+            response = client.chat.completions.create(
+                model=getattr(args, "gpt_naming_model", DEFAULT_GPT_NAMING_MODEL),
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You name call-classification taxonomy clusters. "
+                            "Return a concise, supported cluster display name only."
+                        ),
+                    },
+                    {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                ],
+                temperature=0,
+                max_tokens=32,
+            )
+            raw_name = response.choices[0].message.content if response.choices else ""
+        except Exception as exc:  # pragma: no cover - external API
+            validation_history.append(f"attempt_{attempt}_gpt_error:{exc}")
+            continue
+
+        cleaned = sanitize_display_name_candidate(raw_name, max_words=max_words)
+        notes = validate_promoted_display_name(
+            cleaned,
+            existing_names=existing_names,
+            rejected_names=rejected_names,
+            max_words=max_words,
+        )
+        if cleaned and not notes:
+            retry_note = "" if attempt == 1 else f" after {attempt} GPT attempts"
+            return cleaned, f"GPT-generated promoted standard cluster name{retry_note}."
+
+        rejected_key = normalize_display_name_key(cleaned or raw_name)
+        if rejected_key:
+            rejected_names.add(rejected_key)
+        if cleaned:
+            rejected_display_names.append(cleaned)
+        validation_history.append(
+            f"attempt_{attempt}: proposed='{cleaned or str(raw_name or '').strip()}' notes={','.join(notes) or 'invalid'}"
+        )
+
+    reason = "; ".join(validation_history[-5:]) if validation_history else "no valid GPT response"
+    return None, f"GPT could not generate a unique clean name after {max_retries} attempts. {reason}"
 
 
 def resolve_promoted_standard_display_name(
@@ -1813,10 +1887,10 @@ def resolve_promoted_standard_display_name(
             "naming_reason": gpt_reason,
             "gpt_reason": gpt_reason,
             "used_gpt": True,
-            "duplicate_before_gpt": normalize_label(proposed) in existing_names,
+            "duplicate_before_gpt": normalize_display_name_key(proposed) in existing_names,
         }
 
-    if normalize_label(proposed) not in existing_names:
+    if normalize_display_name_key(proposed) not in existing_names:
         return {
             "display_name": proposed,
             "naming_method": "deterministic_promoted_standard_name_fallback",
@@ -2602,6 +2676,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--standard-naming-method", choices=["gpt", "deterministic"], default=DEFAULT_STANDARD_NAMING_METHOD, help="Naming method for promoted standard clusters. Default: gpt with deterministic fallback.")
     parser.add_argument("--gpt-naming-model", default=DEFAULT_GPT_NAMING_MODEL, help="OpenAI model for GPT cluster naming. Can also be set with OPENAI_NAMING_MODEL.")
     parser.add_argument("--gpt-name-max-words", type=int, default=DEFAULT_GPT_NAME_MAX_WORDS, help="Maximum words allowed in GPT-generated cluster display names.")
+    parser.add_argument("--gpt-name-max-retries", type=int, default=DEFAULT_GPT_NAME_MAX_RETRIES, help="Maximum GPT renaming attempts when a promoted standard name is blank, invalid, or duplicate. Default: 5.")
 
     return parser.parse_args()
 
