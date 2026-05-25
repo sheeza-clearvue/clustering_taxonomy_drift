@@ -47,3 +47,5 @@ node_modules/
 dist/
 .env.local
 .env.*
+rude_direction_investigation/
+deep_rude_direction_investigation/
