@@ -432,7 +432,7 @@ texts = [
     next_step_aware_embedding_text("Access_Blocked"),       # → "next_step_outcome: DEAD_END | label: access blocked"
     next_step_aware_embedding_text("Try_Later"),            # → "next_step_outcome: HOLDING_PATTERN | label: try later"
 ]
-
+"""
 def embedding_text(source_column: str, raw_value: str, mode: str = "field_label") -> str:
     cleaned = normalize_label(raw_value)
     source_column_clean = str(source_column or "").strip()
@@ -453,6 +453,33 @@ def embedding_text(source_column: str, raw_value: str, mode: str = "field_label"
         return (
             f"field: {source_column_clean}; "
             f"meaning: {short_context}; "
+            f"label: {cleaned}"
+        )
+
+    raise ValueError(f"Unknown embedding text mode: {mode}")
+"""
+def embedding_text(source_column: str, raw_value: str, mode: str = "field_label") -> str:
+    cleaned = normalize_label(raw_value)
+    source_column_clean = str(source_column or "").strip()
+
+    if mode == "label_only":
+        return cleaned
+
+    if mode == "field_label":
+        if source_column_clean == "coaching_tags":
+            return coaching_aware_embedding_text(raw_value)
+
+        if source_column_clean == "next_step":
+            return next_step_aware_embedding_text(raw_value)
+
+        business_definition = FIELD_BUSINESS_DEFINITIONS.get(
+            source_column_clean,
+            FIELD_EMBEDDING_CONTEXT.get(source_column_clean, "call classification field"),
+        )
+
+        return (
+            f"field: {source_column_clean}; "
+            f"business_definition: {business_definition}; "
             f"label: {cleaned}"
         )
 
